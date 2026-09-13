@@ -1,3 +1,8 @@
+# Scripted loopback companion: startup is automatic, then each command waits
+# for a test directive. Drop omits a reply but keeps the socket open; RawAndClose
+# writes exactly the supplied wire bytes before disconnecting. Identity bytes
+# select synthetic public keys across reconnects, not real radio identities.
+
 require "../../src/meshcore_tcp_mux/config"
 require "../../src/meshcore_tcp_mux/frame_codec"
 require "./native_startup"
@@ -24,6 +29,7 @@ module SpecSupport
     @stopped = false
     @socket : TCPSocket? = nil
 
+    # Default fake identity marker; later epochs reuse the last supplied value.
     def initialize(@identities : Array(UInt8) = [0xa5_u8])
       @server = TCPServer.new("127.0.0.1", 0)
       @port = @server.local_address.port
@@ -76,6 +82,7 @@ module SpecSupport
     private def serve(socket : TCPSocket, epoch : Int32) : Nil
       identity = @identities[epoch - 1]? || @identities.last
       decoder = MeshCoreTCPMux::FrameCodec::Decoder.new(MeshCoreTCPMux::FrameCodec::CLIENT_TO_COMPANION_MARKER)
+      # Socket read scratch space; capacity is arbitrary and is not a protocol field.
       buffer = Bytes.new(1024)
       startup_complete = false
 
@@ -91,6 +98,7 @@ module SpecSupport
             when 0x16
               write(socket, NativeStartupTransport.device_info)
             when 0x36
+              # OK (0x00): command accepted, not proof of radio delivery.
               write(socket, Bytes[0_u8])
               startup_complete = true
               @ready.send(epoch)

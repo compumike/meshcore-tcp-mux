@@ -1,3 +1,7 @@
+# Synthetic firmware fixtures shared by startup and runtime specs. Payloads
+# exclude the TCP envelope. Distinguishing bytes identify fake epochs/contacts;
+# none of the keys, names, or response fields comes from a physical companion.
+
 require "../../src/meshcore_tcp_mux/frame_codec"
 
 module SpecSupport
@@ -66,6 +70,7 @@ module SpecSupport
         if contact = @contacts.shift?
           enqueue(contact)
         else
+          # END_OF_CONTACTS (0x04), followed by the u32 LE last-modified timestamp.
           enqueue(Bytes[0x04_u8, 0_u8, 0_u8, 0_u8, 0_u8])
           @iterator_active = false
         end
@@ -96,8 +101,13 @@ module SpecSupport
                  when 0x16
                    self.class.device_info
                  when 0x36
+                   # SET_FLOOD_SCOPE_KEY (54/0x36), mode 0 with no key: restore the configured
+                   # default scope.
+                   # OK (0x00): command accepted, not proof of radio delivery.
+                   # ERR (0x01), ILLEGAL_ARG.
                    command == Bytes[0x36_u8, 0_u8] ? Bytes[0_u8] : Bytes[1_u8, 6_u8]
                  else
+                   # ERR (0x01), UNSUPPORTED_CMD.
                    Bytes[1_u8, 1_u8]
                  end
 
@@ -120,6 +130,7 @@ module SpecSupport
     end
 
     def self.self_info(identity_byte : UInt8 = 0xa5_u8) : Bytes
+      # SELF_INFO: minimum 58-byte response; opcode 5, public key occupies offsets 4..35.
       Bytes.new(58, 0_u8).tap do |bytes|
         bytes[0] = 0x05
         bytes[4] = identity_byte
@@ -127,6 +138,8 @@ module SpecSupport
     end
 
     def self.device_info(distinguishing_byte : UInt8 = 0xa5_u8) : Bytes
+      # DEVICE_INFO: exactly 82 bytes, opcode 0x0d, protocol version 13 at offset 1; other
+      # fields are synthetic.
       Bytes.new(82, 0_u8).tap do |bytes|
         bytes[0] = 0x0d
         bytes[1] = 13
@@ -135,6 +148,8 @@ module SpecSupport
     end
 
     def self.contact(identity_byte : UInt8) : Bytes
+      # CONTACT record: 148 bytes total (opcode 3 plus native contact fields); unused fields are
+      # synthetic zeroes.
       Bytes.new(148, 0_u8).tap do |bytes|
         bytes[0] = 0x03
         bytes[1] = identity_byte

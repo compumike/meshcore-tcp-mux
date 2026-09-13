@@ -1,3 +1,8 @@
+# Loopback-only transport tests: endpoints frame and own bytes but do not
+# validate command semantics. Several short payloads are ordering sentinels,
+# not valid MeshCore replies. The final runtime test adds a protocol-aware fake.
+# Envelope lengths and protocol integer fields are little-endian.
+
 require "./spec_helper"
 require "../src/meshcore_tcp_mux/config"
 require "../src/meshcore_tcp_mux/runtime"
@@ -40,14 +45,19 @@ describe MeshCoreTCPMux::Transport::Endpoint do
       peer, 7, client_marker, companion_marker, events, 5.seconds, 5.seconds, 4
     )
     endpoint.start
+    # GET_DEVICE_TIME opcode plus opaque 0xaa sentinel; transport preserves bytes without
+    # parsing them.
     frame = MeshCoreTCPMux::FrameCodec.encode(Bytes[5_u8, 0xaa_u8], client_marker)
     client.write(frame[0, 2])
     client.write(frame[2, frame.size - 2])
     event = events.receive.as(MeshCoreTCPMux::Transport::Frame)
     event.endpoint.should eq(7)
+    # GET_DEVICE_TIME opcode plus opaque 0xaa sentinel; transport preserves bytes without
+    # parsing them.
     event.payload.should eq(Bytes[5_u8, 0xaa_u8])
 
     event.payload[0] = 0xff
+    # GET_DEVICE_TIME (5): local clock query.
     client.write(MeshCoreTCPMux::FrameCodec.encode(Bytes[5_u8], companion_marker))
     events.receive.should be_a(MeshCoreTCPMux::Transport::Closed)
   ensure
@@ -64,16 +74,21 @@ describe MeshCoreTCPMux::Transport::Endpoint do
     )
     endpoint.start
     12.times do |index|
+      # Opaque sequence-number payload; checks ordering across queued/coalesced frames, not
+      # protocol semantics.
       endpoint.enqueue(MeshCoreTCPMux::Transport::Write.new(3, index.to_i64, Bytes[index.to_u8])).should be_true
     end
 
     decoder = MeshCoreTCPMux::FrameCodec::Decoder.new(companion_marker)
     received = [] of Bytes
+    # Socket read scratch space; capacity is arbitrary and is not a protocol field.
     buffer = Bytes.new(128)
     until received.size == 12
       count = client.read(buffer)
       decoder.feed(buffer[0, count], MeshCoreTCPMux::Clock.now) { |payload| received << payload }
     end
+    # Opaque sequence-number payload; checks ordering across queued/coalesced frames, not
+    # protocol semantics.
     received.should eq((0...12).map { |index| Bytes[index.to_u8] })
     12.times { events.receive.should be_a(MeshCoreTCPMux::Transport::Written) }
   ensure
@@ -89,6 +104,8 @@ describe MeshCoreTCPMux::Transport::Endpoint do
       peer, 10, client_marker, companion_marker, events, 20.milliseconds, 5.seconds, 1
     )
     endpoint.start
+    # Only the client '<' marker is written; missing length/body must hit the partial-frame
+    # deadline.
     client.write(Bytes[client_marker])
 
     select
@@ -111,12 +128,19 @@ describe MeshCoreTCPMux::Transport::Endpoint do
       peer, 11, client_marker, companion_marker, events, 5.seconds, 5.seconds, 1
     )
     endpoint.start
+    # GET_DEVICE_TIME (5): local clock query.
     client.write(MeshCoreTCPMux::FrameCodec.encode(Bytes[5_u8], client_marker))
     Fiber.yield
 
+    # Opaque one-byte writer payload 1; distinguishes queue order, not a valid protocol
+    # response.
     endpoint.enqueue(MeshCoreTCPMux::Transport::Write.new(4, 1, Bytes[1_u8])).should be_true
     Fiber.yield
+    # Opaque one-byte writer payload 2; distinguishes queue order, not a valid protocol
+    # response.
     endpoint.enqueue(MeshCoreTCPMux::Transport::Write.new(4, 2, Bytes[2_u8])).should be_true
+    # Opaque one-byte writer payload 3; distinguishes queue order, not a valid protocol
+    # response.
     endpoint.enqueue(MeshCoreTCPMux::Transport::Write.new(4, 3, Bytes[3_u8])).should be_false
 
     stopped = Channel(Nil).new(1)
@@ -147,15 +171,21 @@ describe MeshCoreTCPMux::Transport::Endpoint do
       socket, 12, client_marker, companion_marker, events, 5.seconds, 5.seconds, 2
     )
     endpoint.start
+    # GET_DEVICE_TIME opcode plus opaque 0xaa sentinel; transport preserves bytes without
+    # parsing them.
     endpoint.enqueue(MeshCoreTCPMux::Transport::Write.new(8, 1, Bytes[5_u8, 0xaa_u8])).should be_true
+    # Opaque one-byte writer payload 6; distinguishes queue order, not a valid protocol
+    # response.
     endpoint.enqueue(MeshCoreTCPMux::Transport::Write.new(8, 2, Bytes[6_u8])).should be_true
 
     event = events.receive.as(MeshCoreTCPMux::Transport::WriteFailed)
     event.write_id.should eq(1)
     event.reason.should contain("injected failure")
     socket.write_calls.should eq(1)
+    # Socket read scratch space; capacity is arbitrary and is not a protocol field.
     received = Bytes.new(8)
     peer.read(received).should eq(2)
+    # First two envelope bytes only: companion marker '>' and low payload-length byte 2.
     received[0, 2].should eq(Bytes[companion_marker, 2_u8])
     3.times { Fiber.yield }
     socket.write_calls.should eq(1)
@@ -183,6 +213,7 @@ describe MeshCoreTCPMux::Runtime do
     spawn do
       socket = companion_server.accept
       decoder = MeshCoreTCPMux::FrameCodec::Decoder.new(MeshCoreTCPMux::FrameCodec::CLIENT_TO_COMPANION_MARKER)
+      # Socket read scratch space; capacity is arbitrary and is not a protocol field.
       buffer = Bytes.new(1024)
       begin
         loop do
@@ -196,12 +227,17 @@ describe MeshCoreTCPMux::Runtime do
                          SpecSupport::NativeStartupTransport.device_info
                        when 0x36
                          scope_written.send(nil)
+                         # OK (0x00): command accepted, not proof of radio delivery.
                          Bytes[0_u8]
                        when 10
+                         # NO_MORE_MESSAGES (0x0a): inbox empty.
                          Bytes[10_u8]
                        when 5
+                         # CURRENT_TIME (0x09), followed by a four-byte little-endian timestamp;
+                         # compare the reply byte-for-byte.
                          Bytes[9_u8, 0x78_u8, 0x56_u8, 0x34_u8, 0x12_u8]
                        else
+                         # ERR (0x01), UNSUPPORTED_CMD.
                          Bytes[1_u8, 1_u8]
                        end
             socket.write(MeshCoreTCPMux::FrameCodec.encode(response, MeshCoreTCPMux::FrameCodec::COMPANION_TO_CLIENT_MARKER))
@@ -223,14 +259,18 @@ describe MeshCoreTCPMux::Runtime do
 
     client = TCPSocket.new("127.0.0.1", config.listen_port)
     client.read_timeout = 1.second
+    # GET_DEVICE_TIME (5): local clock query.
     client.write(MeshCoreTCPMux::FrameCodec.encode(Bytes[5_u8], MeshCoreTCPMux::FrameCodec::CLIENT_TO_COMPANION_MARKER))
     decoder = MeshCoreTCPMux::FrameCodec::Decoder.new(MeshCoreTCPMux::FrameCodec::COMPANION_TO_CLIENT_MARKER)
     replies = [] of Bytes
+    # Socket read scratch space; capacity is arbitrary and is not a protocol field.
     buffer = Bytes.new(128)
     until replies.any? { |payload| payload[0] == 9 }
       count = client.read(buffer)
       decoder.feed(buffer[0, count], MeshCoreTCPMux::Clock.now) { |payload| replies << payload }
     end
+    # CURRENT_TIME (0x09), followed by a four-byte little-endian timestamp; compare the reply
+    # byte-for-byte.
     replies.should contain(Bytes[9_u8, 0x78_u8, 0x56_u8, 0x34_u8, 0x12_u8])
 
     runtime.stop

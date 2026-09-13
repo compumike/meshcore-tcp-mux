@@ -1,3 +1,8 @@
+# End-to-end fault tests use only loopback sockets and a scripted companion.
+# Each upstream connection is an epoch; uncertainty closes its downstream clients
+# and must never replay their old commands. Helpers hide framing, not responses:
+# the test explicitly tells the companion when to reply, drop, or close.
+
 require "./spec_helper"
 require "../src/meshcore_tcp_mux/runtime"
 require "./support/runtime_companion"
@@ -62,6 +67,7 @@ end
 private def admit_client(companion : SpecSupport::RuntimeCompanion, config : MeshCoreTCPMux::Config, epoch : Int32) : TCPSocket
   socket = connect_fault_client(config)
   next_command(companion, 10_u8, epoch)
+  # NO_MORE_MESSAGES (0x0a): inbox empty.
   companion.reply(Bytes[10_u8])
   socket
 end
@@ -85,6 +91,7 @@ end
 
 private def read_payload(socket : TCPSocket, opcode : UInt8) : Bytes
   decoder = MeshCoreTCPMux::FrameCodec::Decoder.new(MeshCoreTCPMux::FrameCodec::COMPANION_TO_CLIENT_MARKER)
+  # Socket read scratch space; capacity is arbitrary and is not a protocol field.
   buffer = Bytes.new(256)
   loop do
     count = socket.read(buffer)
@@ -98,6 +105,8 @@ private def read_payload(socket : TCPSocket, opcode : UInt8) : Bytes
 end
 
 private def orphan_message : Bytes
+  # Minimal legacy CONTACT_MESSAGE: opcode 7, six-byte sender prefix, path/type bytes, u32
+  # timestamp; no text body.
   Bytes.new(13, 0_u8).tap { |payload| payload[0] = 7_u8 }
 end
 
@@ -109,9 +118,11 @@ describe MeshCoreTCPMux::Runtime, "fault and epoch boundaries" do
     a = admit_client(companion, config, 1)
     b = admit_client(companion, config, 1)
 
+    # GET_DEVICE_TIME (5): local clock query.
     send_command(a, Bytes[5_u8])
     next_command(companion, 5_u8, 1)
     companion.drop
+    # GET_BATT_AND_STORAGE (20): queued query must not be replayed after reconnect.
     send_command(b, Bytes[20_u8])
 
     expect_closed(a)
@@ -135,15 +146,19 @@ describe MeshCoreTCPMux::Runtime, "fault and epoch boundaries" do
     runtime, config, runtime_done = start_fault_runtime(companion)
     await_epoch_ready(companion, 1)
     first = admit_client(companion, config, 1)
+    # GET_DEVICE_TIME (5): local clock query.
     send_command(first, Bytes[5_u8])
     next_command(companion, 5_u8, 1)
+    # Wrong-direction upstream frame: request marker '<', length 1, response opcode 9.
     companion.raw_and_close(Bytes[0x3c_u8, 1_u8, 0_u8, 9_u8])
     expect_closed(first)
 
     await_epoch_ready(companion, 2)
     second = admit_client(companion, config, 2)
+    # GET_DEVICE_TIME (5): local clock query.
     send_command(second, Bytes[5_u8])
     next_command(companion, 5_u8, 2)
+    # Truncated response: '>' and length 5, but only CURRENT_TIME opcode 9 precedes EOF.
     companion.raw_and_close(Bytes[0x3e_u8, 5_u8, 0_u8, 9_u8])
     expect_closed(second)
     await_epoch_ready(companion, 3)
@@ -162,15 +177,21 @@ describe MeshCoreTCPMux::Runtime, "fault and epoch boundaries" do
     healthy = admit_client(companion, config, 1)
 
     slow = admit_client(companion, config, 1)
+    # Only the client '<' marker is written; missing length/body must hit the partial-frame
+    # deadline.
     slow.write(Bytes[MeshCoreTCPMux::FrameCodec::CLIENT_TO_COMPANION_MARKER])
     expect_closed(slow)
 
     malformed = admit_client(companion, config, 1)
+    # GET_DEVICE_TIME (5): local clock query.
     malformed.write(MeshCoreTCPMux::FrameCodec.encode(Bytes[5_u8], MeshCoreTCPMux::FrameCodec::COMPANION_TO_CLIENT_MARKER))
     expect_closed(malformed)
 
+    # GET_DEVICE_TIME (5): local clock query.
     send_command(healthy, Bytes[5_u8])
     next_command(companion, 5_u8, 1)
+    # CURRENT_TIME (0x09), followed by a four-byte little-endian timestamp; compare the reply
+    # byte-for-byte.
     expected = Bytes[9_u8, 0x78_u8, 0x56_u8, 0x34_u8, 0x12_u8]
     companion.reply(expected)
     read_payload(healthy, 9_u8).should eq(expected)
@@ -184,11 +205,14 @@ describe MeshCoreTCPMux::Runtime, "fault and epoch boundaries" do
   end
 
   it "carries one orphan inbox item across a matching-identity epoch" do
+    # The synthetic public key is identical in both epochs: the orphan belongs
+    # to this same companion and can safely be offered after reconnect.
     companion = SpecSupport::RuntimeCompanion.new([0xa5_u8, 0xa5_u8])
     runtime, config, runtime_done = start_fault_runtime(companion)
     await_epoch_ready(companion, 1)
     departing = admit_client(companion, config, 1)
 
+    # MSG_WAITING (0x83): inbox availability hint; fetch the actual body separately.
     companion.push(Bytes[0x83_u8])
     next_command(companion, 10_u8, 1)
     departing.close
@@ -200,7 +224,9 @@ describe MeshCoreTCPMux::Runtime, "fault and epoch boundaries" do
 
     await_epoch_ready(companion, 2)
     arriving = admit_client(companion, config, 2)
+    # MSG_WAITING (0x83): inbox availability hint; fetch the actual body separately.
     read_payload(arriving, 0x83_u8).should eq(Bytes[0x83_u8])
+    # SYNC_NEXT_MESSAGE (10): pop the next inbox item.
     send_command(arriving, Bytes[10_u8])
     read_payload(arriving, 7_u8).should eq(item)
   ensure
@@ -212,11 +238,14 @@ describe MeshCoreTCPMux::Runtime, "fault and epoch boundaries" do
   end
 
   it "discards an orphan inbox item when the upstream identity changes" do
+    # Changing the synthetic key's first byte models a different companion.
+    # An old companion's orphan must never leak to clients of the new device.
     companion = SpecSupport::RuntimeCompanion.new([0xa5_u8, 0xb6_u8])
     runtime, config, runtime_done = start_fault_runtime(companion)
     await_epoch_ready(companion, 1)
     departing = admit_client(companion, config, 1)
 
+    # MSG_WAITING (0x83): inbox availability hint; fetch the actual body separately.
     companion.push(Bytes[0x83_u8])
     next_command(companion, 10_u8, 1)
     departing.close
@@ -227,9 +256,12 @@ describe MeshCoreTCPMux::Runtime, "fault and epoch boundaries" do
 
     await_epoch_ready(companion, 2)
     arriving = admit_client(companion, config, 2)
+    # SYNC_NEXT_MESSAGE (10): pop the next inbox item.
     send_command(arriving, Bytes[10_u8])
     next_command(companion, 10_u8, 2)
+    # NO_MORE_MESSAGES (0x0a): inbox empty.
     companion.reply(Bytes[10_u8])
+    # NO_MORE_MESSAGES (0x0a): inbox empty.
     read_payload(arriving, 10_u8).should eq(Bytes[10_u8])
   ensure
     departing.try &.close

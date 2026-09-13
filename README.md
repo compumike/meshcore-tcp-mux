@@ -1,9 +1,21 @@
 # meshcore-tcp-mux
 
-A small Crystal TCP multiplexer for one native MeshCore protocol-13 companion.
-Existing clients connect to the listener using the normal companion protocol.
-The daemon serializes commands, gives each connection its own incoming-message
-FIFO, and preserves actual command and response bytes.
+A small, simple, protocol-aware, N-to-1 TCP multiplexer for **connecting multiple TCP clients (such as meshcore-cli, meshcore-HA, bots, etc.)** to **one physical MeshCore companion**. It maintains one upstream TCP connection and accepts multiple downstream TCP connections using the existing companion wire protocol.
+
+This lets you share one physical MeshCore companion (or, for example, an OpenHop Repeater software companion) with multiple TCP clients, and allows them all to send and receive DMs and channel messages, list contacts, etc.
+
+The core is **a serialized command broker plus a virtual receive inbox for each downstream connection**. All clients share the physical node's identity, contacts, channels, radio settings, etc. They do **not** acquire independent mesh-visible companion identities. Changing node settings on one will change it on all (and may not be reflected properly on all clients until their connections are restarted).
+
+It has **no database**: this is a feature. It's just TCP in, TCP out.
+
+## ⚠️ WARNING: mostly vibe coded, beware! ⚠️
+
+## Why is this needed?
+
+- The default MeshCore companion firmware (and similarly the OpenHop repeater software companion) only handles one TCP connection at a time.
+- [MeshMonitor Virtual Node](https://meshmonitor.org/configuration/virtual-node.html) has bugs.
+- [coresplitter](https://github.com/ogarcia/coresplitter) has bugs.
+- [meshcore_multitcp](https://github.com/do6uk/meshcore_multitcp) has bugs.
 
 ## Build and run
 
