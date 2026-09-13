@@ -26,7 +26,7 @@ parser = OptionParser.new do |options|
   options.on("--startup-timeout SECONDS", "Startup synchronization deadline (15)") { |v| config.startup_timeout = v.to_f.seconds }
   options.on("--signing-timeout SECONDS", "Signing inactivity deadline (30)") { |v| config.signing_timeout = v.to_f.seconds }
   options.on("--poll-interval SECONDS", "Inbox fallback polling interval (5)") { |v| config.poll_interval = v.to_f.seconds }
-  options.on("--maintenance", "Enable disruptive commands with one idle session") { config.maintenance = true }
+  options.on("--maintenance", "Enable private-key import and factory reset with one idle session") { config.maintenance = true }
   options.on("--allow-private-key-export", "Allow requester-only private key export") { config.private_key_export = true }
   options.on("-h", "--help", "Show usage") { puts options; exit }
 end

@@ -94,9 +94,11 @@ may be indistinguishable from a newer one even to firmware. Leases prevent
 concurrent overwrite, but do not invent causal identifiers or guarantee
 exactly-once radio delivery.
 
-Reboot, factory reset, and private-key import are disabled by default. Explicit
-`--maintenance` allows them only with one client and no pending radio/signing
-leases, and ends the epoch after the operation. Private-key export has a
+Reboot is always allowed through normal command scheduling, even with multiple
+clients or pending radio/signing leases; it disconnects all clients when the
+companion restarts. Factory reset and private-key import are disabled by default.
+Explicit `--maintenance` allows those two operations only with one client and no
+pending radio/signing leases, and ends the epoch after the operation. Private-key export has a
 separate `--allow-private-key-export` flag. Default logs contain metadata,
 queue counts, and public firmware identification, not payloads or secrets.
 

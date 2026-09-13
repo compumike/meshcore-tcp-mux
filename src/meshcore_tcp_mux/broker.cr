@@ -270,7 +270,7 @@ module MeshCoreTCPMux
             @counters[:rejections] += 1
             @actions << Diagnostic.new("epoch=#{@epoch} session=#{session.id} command=export_private_key rejection=disabled")
             emit(session.id, Bytes[0x0f])
-          elsif {19_u8, 24_u8, 51_u8}.includes?(command.payload[0]) && !@config.maintenance
+          elsif {24_u8, 51_u8}.includes?(command.payload[0]) && !@config.maintenance
             session.commands.shift
             reject(session.id, 1_u8, "maintenance disabled")
           else
@@ -335,7 +335,9 @@ module MeshCoreTCPMux
     private def admit_command?(owner : Int64, command : Bytes, now : Time::Span) : Bool
       descriptor = Protocol.descriptor(command).not_nil!
       reason : UInt8? = nil
-      if descriptor.flags.includes?(Protocol::CommandFlags::Maintenance)
+      # Reboot keeps the disruptive-operation lifecycle, but has no maintenance
+      # permission, single-client, or idle-radio prerequisite.
+      if descriptor.flags.includes?(Protocol::CommandFlags::Maintenance) && command[0] != 19
         if @sessions.size != 1 || @remote.occupied?(now) || @dm_ring.pending_count(now) > 0 || @signing.occupied?(now)
           reason = 4_u8
         end

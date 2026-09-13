@@ -341,7 +341,6 @@ describe "remaining design acceptance invariants" do
   it "applies the default maintenance and private-key export refusal policy locally" do
     h = GapHarness.new(ids: [1_i64])
     commands = [
-      Bytes[19_u8] + "reboot".to_slice,
       Bytes[24_u8] + Bytes.new(64, 0_u8),
       Bytes[51_u8] + "reset".to_slice,
     ]
@@ -353,6 +352,19 @@ describe "remaining design acceptance invariants" do
     h.client(1_i64, Bytes[23_u8])
     h.downstream[1_i64].last.should eq(Bytes[0x0f_u8])
     h.upstream.should be_empty
+  end
+
+  it "allows reboot by default with multiple clients and pending radio work" do
+    h = GapHarness.new
+    status, _ = remote_vector(27_u8)
+    h.client(1_i64, status)
+    h.upstream.shift.payload.should eq(status)
+    h.response(gap_sent)
+
+    reboot = Bytes[19_u8] + "reboot".to_slice
+    h.client(2_i64, reboot)
+    h.upstream.shift.payload.should eq(reboot)
+    h.downstream[2_i64].should be_empty
   end
 
   it "gates enabled maintenance on every live shared radio resource" do
