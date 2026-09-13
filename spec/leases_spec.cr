@@ -1,8 +1,3 @@
-# Lease tests exercise bookkeeping independently of the broker and framing.
-# Some command/push fixtures contain only the fields the lease matcher reads;
-# they are not claims of full protocol validity. Tokens/times are little-endian.
-# A SENT reply accepts work; only a matching asynchronous result settles it.
-
 require "./spec_helper"
 require "../src/meshcore_tcp_mux/leases"
 
@@ -40,6 +35,11 @@ private def peer_push(opcode : UInt8, peer : Bytes) : Bytes
 end
 
 describe MeshCoreTCPMux::DmRing do
+  # Lease tests exercise bookkeeping independently of the broker and framing.
+  # Some command/push fixtures contain only the fields the lease matcher reads;
+  # they are not claims of full protocol validity. Tokens/times are little-endian.
+  # A SENT reply accepts work; only a matching asynchronous result settles it.
+
   it "protects the next physical slot across holes and wraparound" do
     ring = MeshCoreTCPMux::DmRing.new
     8.times { |i| ring.accepted(sent((i + 1).to_u32), 0.seconds) }

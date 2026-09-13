@@ -1,12 +1,12 @@
-# Loopback-only startup/probe tests. The fake recognizes APP_START (1),
-# DEVICE_QUERY (22/0x16), and default-scope reset (54/0x36). Failure modes inject
-# raw envelopes or omit replies to verify bounded failure and socket cleanup.
-
 require "./spec_helper"
 require "../src/meshcore_tcp_mux/upstream"
 require "./support/native_startup"
 
 private class IsolatedProbeCompanion
+  # Loopback-only startup/probe tests. The fake recognizes APP_START (1),
+  # DEVICE_QUERY (22/0x16), and default-scope reset (54/0x36). Failure modes inject
+  # raw envelopes or omit replies to verify bounded failure and socket cleanup.
+
   getter commands = [] of Bytes
   getter port : Int32
   getter disconnected = Channel(Nil).new(1)

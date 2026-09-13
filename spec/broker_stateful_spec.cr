@@ -1,18 +1,18 @@
-# Wire fixtures below are decoded payloads, not TCP frames. All multi-byte
-# integers are little-endian; keys, timestamps and message bodies are synthetic.
-# Comments distinguish immediate command acceptance from later radio results.
-
 require "./spec_helper"
 require "../src/meshcore_tcp_mux/broker"
 
-# These are broker-level conversations, not socket tests. client(id, bytes)
-# injects one decoded client command; response(bytes) injects a companion reply
-# or asynchronous push. upstream records physical commands in dispatch order;
-# replies[id] records only what that downstream client would receive.
-# Session 0 is the physical companion; sessions 1 and 2 are independent clients.
-# flush acknowledges writes immediately, but never invents companion replies.
-# Time advances only when a test changes now, so radio leases are deterministic.
 private class StatefulHarness
+  # These are broker-level conversations, not socket tests. client(id, bytes)
+  # injects one decoded client command; response(bytes) injects a companion reply
+  # or asynchronous push. upstream records physical commands in dispatch order;
+  # replies[id] records only what that downstream client would receive.
+  # Session 0 is the physical companion; sessions 1 and 2 are independent clients.
+  # flush acknowledges writes immediately, but never invents companion replies.
+  # Time advances only when a test changes now, so radio leases are deterministic.
+  # Wire fixtures below are decoded payloads, not TCP frames. All multi-byte
+  # integers are little-endian; keys, timestamps and message bodies are synthetic.
+  # Comments distinguish immediate command acceptance from later radio results.
+
   getter broker : MeshCoreTCPMux::Broker
   getter upstream = Deque(Bytes).new
   getter replies = Hash(Int64, Array(Bytes)).new { |h, k| h[k] = [] of Bytes }
@@ -62,19 +62,19 @@ private class StatefulHarness
   end
 end
 
-# SENT is acceptance, not delivery: [0x06, routing mode, ACK token (4 bytes),
-# suggested timeout in milliseconds (u32 little-endian)]. 0x1f40 is 8000 ms.
-# Vary only the token's first byte so ring-slot ownership is easy to track.
 private def stateful_sent(token : UInt8 = 1)
+  # SENT is acceptance, not delivery: [0x06, routing mode, ACK token (4 bytes),
+  # suggested timeout in milliseconds (u32 little-endian)]. 0x1f40 is 8000 ms.
+  # Vary only the token's first byte so ring-slot ownership is easy to track.
   # SENT (0x06): routing mode, four-byte ACK token, then suggested timeout (u32 LE); acceptance
   # only.
   Bytes[6, 1, token, 0xbb, 0xcc, 0xdd, 0x40, 0x1f, 0, 0]
 end
 
-# SEND_TXT_MSG: opcode 2, plain-text type 0, attempt 2, timestamp 0x12345678
-# (u32 little-endian), six-byte synthetic recipient prefix 01..06, then "hi".
-# The nonzero attempt/timestamp make unwanted rewriting visible in equality tests.
 private def stateful_dm
+  # SEND_TXT_MSG: opcode 2, plain-text type 0, attempt 2, timestamp 0x12345678
+  # (u32 little-endian), six-byte synthetic recipient prefix 01..06, then "hi".
+  # The nonzero attempt/timestamp make unwanted rewriting visible in equality tests.
   # SEND_TXT_MSG (2): type 0/plain, attempt 2, timestamp bytes 3..6 (u32 LE), recipient prefix
   # bytes 7..12, then message bytes.
   Bytes[2, 0, 2, 0x78, 0x56, 0x34, 0x12, 1, 2, 3, 4, 5, 6, 0x68, 0x69]

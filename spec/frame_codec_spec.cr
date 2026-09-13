@@ -1,8 +1,3 @@
-# Framing-only tests: payloads are opaque here, even when their first byte
-# resembles a command. The envelope is marker ('<' request / '>' response),
-# two-byte little-endian payload length, then payload. Marker-looking bytes
-# inside a body are data, never delimiters. Tests control time without sleeping.
-
 require "./spec_helper"
 require "../src/meshcore_tcp_mux/frame_codec"
 
@@ -12,6 +7,11 @@ private def encoded(payload : Array(Int32), marker = MeshCoreTCPMux::FrameCodec:
 end
 
 describe MeshCoreTCPMux::FrameCodec do
+  # Framing-only tests: payloads are opaque here, even when their first byte
+  # resembles a command. The envelope is marker ('<' request / '>' response),
+  # two-byte little-endian payload length, then payload. Marker-looking bytes
+  # inside a body are data, never delimiters. Tests control time without sleeping.
+
   marker = MeshCoreTCPMux::FrameCodec::CLIENT_TO_COMPANION_MARKER
   reverse_marker = MeshCoreTCPMux::FrameCodec::COMPANION_TO_CLIENT_MARKER
   zero = Time::Span.zero

@@ -5,10 +5,10 @@ require "./frame_codec"
 require "./startup"
 require "./transport"
 
-module MeshCoreTCPMux
-  # Owns the listener, upstream epochs, socket fibers, and Broker side effects.
-  # The Broker is invoked only by this fiber.
+class MeshCoreTCPMux
   class Runtime
+    # Owns the listener, upstream epochs, socket fibers, and Broker side effects.
+    # The Broker is invoked only by this fiber.
     alias ConnectResult = TCPSocket | Exception
 
     @stopping = Channel(Nil).new
@@ -95,8 +95,8 @@ module MeshCoreTCPMux
       @finished.send(nil)
     end
 
-    # Stops only local I/O. It deliberately emits no radio command.
     def stop : Nil
+      # Stops only local I/O. It deliberately emits no radio command.
       return if @stop_requested
       @stop_requested = true
       @stopping.close

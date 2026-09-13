@@ -2,8 +2,8 @@ require "socket"
 require "./config"
 require "./frame_codec"
 
-module MeshCoreTCPMux
-  module Transport
+class MeshCoreTCPMux
+  class Transport
     record Frame, endpoint : Int64, payload : Bytes
     record Closed, endpoint : Int64, reason : String, category : Symbol = :normal
     record Written, endpoint : Int64, epoch : Int64, write_id : Int64
@@ -12,8 +12,8 @@ module MeshCoreTCPMux
 
     record Write, epoch : Int64, write_id : Int64, payload : Bytes
 
-    # Owns a socket. No other fiber reads or writes it after start.
     class Endpoint
+      # Owns a socket. No other fiber reads or writes it after start.
       getter id : Int64
       getter socket : TCPSocket
 
@@ -40,18 +40,18 @@ module MeshCoreTCPMux
         @socket.write_timeout = write_timeout
       end
 
-      # Starts the reader fiber before the writer fiber. The scheduler observes
-      # that order when this caller next yields.
       def start : Nil
+        # Starts the reader fiber before the writer fiber. The scheduler observes
+        # that order when this caller next yields.
         return if @started
         @started = true
         start_reader
         start_writer
       end
 
-      # Never blocks the broker. A full writer queue is a write failure owned by
-      # the runtime, not permission to accumulate unbounded bytes.
       def enqueue(write : Write) : Bool
+        # Never blocks the broker. A full writer queue is a write failure owned by
+        # the runtime, not permission to accumulate unbounded bytes.
         return false if @stopped
         select
         when @writes.send(write)

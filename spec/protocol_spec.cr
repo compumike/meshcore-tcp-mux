@@ -1,9 +1,3 @@
-# Wire-shape tests deliberately retain literal bytes so expected packets are
-# independent of production encoders. bytes(opcode, size) zero-fills all fields
-# except the first byte; size counts payload bytes, excluding the TCP envelope.
-# Commands and responses reuse numeric codes, so direction matters. Multi-byte
-# fields are little-endian; identities and bodies are synthetic test data.
-
 require "./spec_helper"
 require "../src/meshcore_tcp_mux/protocol"
 
@@ -16,6 +10,12 @@ end
 alias P = MeshCoreTCPMux::Protocol
 
 describe MeshCoreTCPMux::Protocol do
+  # Wire-shape tests deliberately retain literal bytes so expected packets are
+  # independent of production encoders. bytes(opcode, size) zero-fills all fields
+  # except the first byte; size counts payload bytes, excluding the TCP envelope.
+  # Commands and responses reuse numeric codes, so direction matters. Multi-byte
+  # fields are little-endian; identities and bodies are synthetic test data.
+
   it "describes every native_v13 command and rejects reserved/unknown opcodes" do
     expected = ((1_u8..43_u8).to_a + (50_u8..52_u8).to_a + (54_u8..65_u8).to_a)
     P::DESCRIPTORS.keys.sort.should eq(expected)

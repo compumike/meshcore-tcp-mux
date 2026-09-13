@@ -1,8 +1,3 @@
-# Exercise the startup fence through a deterministic firmware-loop model and
-# real frame encoding/decoding, without sockets. Synthetic marker bytes separate
-# old retained replies from newly generated ones. Pre-ready pushes are ignored
-# by opcode, so marker-only pushes here intentionally omit their normal bodies.
-
 require "./spec_helper"
 require "../src/meshcore_tcp_mux/startup"
 require "./support/native_startup"
@@ -61,6 +56,11 @@ private def consume_startup(
 end
 
 describe SpecSupport::NativeStartupTransport do
+  # Exercise the startup fence through a deterministic firmware-loop model and
+  # real frame encoding/decoding, without sockets. Synthetic marker bytes separate
+  # old retained replies from newly generated ones. Pre-ready pushes are ignored
+  # by opcode, so marker-only pushes here intentionally omit their normal bodies.
+
   it "sends its retained queue before reading newly buffered commands" do
     stale = SpecSupport::NativeStartupTransport.device_info(0x55_u8)
     fake = SpecSupport::NativeStartupTransport.new(retained: [stale])

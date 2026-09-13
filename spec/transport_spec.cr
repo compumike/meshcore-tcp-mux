@@ -1,8 +1,3 @@
-# Loopback-only transport tests: endpoints frame and own bytes but do not
-# validate command semantics. Several short payloads are ordering sentinels,
-# not valid MeshCore replies. The final runtime test adds a protocol-aware fake.
-# Envelope lengths and protocol integer fields are little-endian.
-
 require "./spec_helper"
 require "../src/meshcore_tcp_mux/config"
 require "../src/meshcore_tcp_mux/runtime"
@@ -25,6 +20,11 @@ private def unused_tcp_port : Int32
 end
 
 class FaultingWriteSocket < TCPSocket
+  # Loopback-only transport tests: endpoints frame and own bytes but do not
+  # validate command semantics. Several short payloads are ordering sentinels,
+  # not valid MeshCore replies. The final runtime test adds a protocol-aware fake.
+  # Envelope lengths and protocol integer fields are little-endian.
+
   getter write_calls = 0
 
   def write(slice : Bytes) : Nil

@@ -1,8 +1,3 @@
-# Core broker routing/inbox tests. Session 0 denotes the physical companion;
-# positive session IDs are clients. take_actions drains observable effects, not
-# radio responses. Tests inject replies explicitly and use synthetic identities.
-# Byte arrays are decoded protocol payloads; integer fields are little-endian.
-
 require "./spec_helper"
 require "../src/meshcore_tcp_mux/broker"
 
@@ -25,9 +20,9 @@ private def one(items : Array(T)) : T forall T
   items[0]
 end
 
-# Admission schedules internal inbox probes. Answer them empty before each test;
-# otherwise an initialization pop would obscure the user-command ordering.
 private def settle_pumps(broker : MeshCoreTCPMux::Broker, now = Time::Span.zero)
+  # Admission schedules internal inbox probes. Answer them empty before each test;
+  # otherwise an initialization pop would obscure the user-command ordering.
   loop do
     actions = broker.take_actions
     # SYNC_NEXT_MESSAGE (10): pop the next inbox item.
@@ -64,6 +59,11 @@ private def v3_contact(seed = 0_u8) : Bytes
 end
 
 describe MeshCoreTCPMux::Broker do
+  # Core broker routing/inbox tests. Session 0 denotes the physical companion;
+  # positive session IDs are clients. take_actions drains observable effects, not
+  # radio responses. Tests inject replies explicitly and use synthetic identities.
+  # Byte arrays are decoded protocol payloads; integer fields are little-endian.
+
   it "routes identical generic responses to only the active owner and preserves local FIFO" do
     # Synthetic 32-byte companion public key; identifies the epoch, never a real radio key.
     broker = MeshCoreTCPMux::Broker.new(7_i64, Bytes.new(32))

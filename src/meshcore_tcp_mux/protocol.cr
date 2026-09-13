@@ -1,5 +1,5 @@
-module MeshCoreTCPMux
-  module Protocol
+class MeshCoreTCPMux
+  class Protocol
     MAX_PAYLOAD           =   176
     NATIVE_PROTOCOL_LEVEL = 13_u8
     MAX_PATH_SIZE         =    64
@@ -311,10 +311,10 @@ module MeshCoreTCPMux
       path_bytes % (1 << shift) == 0 && p.size == 12 + path_bytes + (path_bytes >> shift) + 1
     end
 
-    # Packet::getPathHashSize() in the pinned native firmware defines ordinary
-    # path width as upper-bits + 1 (1, 2, 3; 4 is reserved). Trace flags are a
-    # distinct format whose low bits select powers-of-two widths.
     private def self.normal_encoded_path_bytes(encoded : UInt8) : Int32?
+      # Packet::getPathHashSize() in the pinned native firmware defines ordinary
+      # path width as upper-bits + 1 (1, 2, 3; 4 is reserved). Trace flags are a
+      # distinct format whose low bits select powers-of-two widths.
       count = (encoded & 0x3f).to_i
       width = (encoded >> 6).to_i + 1
       return nil if width == 4

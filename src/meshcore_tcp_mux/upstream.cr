@@ -3,11 +3,11 @@ require "./startup"
 require "./config"
 require "./transport"
 
-module MeshCoreTCPMux
-  # A standalone version probe is also useful when diagnosing deployment access.
-  # It uses the same synchronization fence as the daemon, with no listener.
-  module Upstream
+class MeshCoreTCPMux
+  class Upstream
     def self.probe(host : String, port : Int32, config = Config.new) : String
+      # A standalone version probe is also useful when diagnosing deployment access.
+      # It uses the same synchronization fence as the daemon, with no listener.
       socket = TCPSocket.new(host, port, connect_timeout: 5.seconds)
       events = Channel(Transport::Event).new(32)
       endpoint = Transport::Endpoint.new(

@@ -1,14 +1,14 @@
-# Synthetic firmware fixtures shared by startup and runtime specs. Payloads
-# exclude the TCP envelope. Distinguishing bytes identify fake epochs/contacts;
-# none of the keys, names, or response fields comes from a physical companion.
-
 require "../../src/meshcore_tcp_mux/frame_codec"
 
-module SpecSupport
-  # Deterministic model of the pinned SerialWifiInterface / MyMesh startup path.
-  # One `tick` is one firmware loop: send one queued frame, otherwise read one
-  # command, otherwise advance an old contacts iterator once.
+class SpecSupport
   class NativeStartupTransport
+    # Synthetic firmware fixtures shared by startup and runtime specs. Payloads
+    # exclude the TCP envelope. Distinguishing bytes identify fake epochs/contacts;
+    # none of the keys, names, or response fields comes from a physical companion.
+
+    # Deterministic model of the pinned SerialWifiInterface / MyMesh startup path.
+    # One `tick` is one firmware loop: send one queued frame, otherwise read one
+    # command, otherwise advance an old contacts iterator once.
     MAX_RETAINED_FRAMES = 4
 
     getter actions = [] of Symbol
@@ -38,9 +38,9 @@ module SpecSupport
       @request_decoder = MeshCoreTCPMux::FrameCodec::Decoder.new(MeshCoreTCPMux::FrameCodec::CLIENT_TO_COMPANION_MARKER)
     end
 
-    # A replacement TCP client gets a fresh receive header/decoder. The native
-    # send queue and the higher-level contacts iterator deliberately survive.
     def reconnect : Nil
+      # A replacement TCP client gets a fresh receive header/decoder. The native
+      # send queue and the higher-level contacts iterator deliberately survive.
       @request_decoder = MeshCoreTCPMux::FrameCodec::Decoder.new(MeshCoreTCPMux::FrameCodec::CLIENT_TO_COMPANION_MARKER)
     end
 
@@ -50,8 +50,8 @@ module SpecSupport
       end
     end
 
-    # Returns at most one framed companion-to-client response.
     def tick : Bytes?
+      # Returns at most one framed companion-to-client response.
       if payload = @send_queue.shift?
         @actions << :send
         @payloads_sent << payload
@@ -80,8 +80,8 @@ module SpecSupport
       nil
     end
 
-    # Models an asynchronous firmware push entering the same bounded send queue.
     def push(payload : Bytes) : Bool
+      # Models an asynchronous firmware push entering the same bounded send queue.
       enqueue(payload)
     end
 

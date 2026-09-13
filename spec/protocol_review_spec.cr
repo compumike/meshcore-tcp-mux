@@ -1,8 +1,3 @@
-# Regression fixtures target native-v13 length and encoded-path edge cases.
-# review_payload(code, size) zero-fills unused fields; size includes the opcode
-# but excludes TCP framing. Mutations below isolate the field being validated.
-# Normal paths use width-minus-one in high bits; trace paths use low-bit shifts.
-
 require "./spec_helper"
 require "../src/meshcore_tcp_mux/protocol"
 
@@ -15,6 +10,11 @@ end
 alias ReviewedProtocol = MeshCoreTCPMux::Protocol
 
 describe "native_v13 protocol validation regressions" do
+  # Regression fixtures target native-v13 length and encoded-path edge cases.
+  # review_payload(code, size) zero-fills unused fields; size includes the opcode
+  # but excludes TCP framing. Mutations below isolate the field being validated.
+  # Normal paths use width-minus-one in high bits; trace paths use low-bit shifts.
+
   it "validates the fixed advert/path keys and raw push metadata prefixes" do
     # ADVERT/PATH_UPDATED carry a 32-byte public key (33 including opcode).
     # RAW_DATA/CONTROL_DATA need four header bytes; LOG_RX_DATA needs three.

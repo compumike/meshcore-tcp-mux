@@ -1,16 +1,16 @@
-# Cross-feature acceptance tests use a deterministic companion conversation.
-# GapHarness.client injects a downstream command; response injects a physical
-# reply/push. upstream stores physical SendFrame actions, downstream[id] stores
-# client-visible payloads. Downstream writes complete immediately; upstream
-# writes are explicitly acknowledged where write timing matters. All fixtures
-# use synthetic keys/timestamps, and multi-byte wire integers are little-endian.
-
 require "./spec_helper"
 require "../src/meshcore_tcp_mux/broker"
 
 private alias GapAction = MeshCoreTCPMux::Action
 
 private class GapHarness
+  # Cross-feature acceptance tests use a deterministic companion conversation.
+  # GapHarness.client injects a downstream command; response injects a physical
+  # reply/push. upstream stores physical SendFrame actions, downstream[id] stores
+  # client-visible payloads. Downstream writes complete immediately; upstream
+  # writes are explicitly acknowledged where write timing matters. All fixtures
+  # use synthetic keys/timestamps, and multi-byte wire integers are little-endian.
+
   getter broker : MeshCoreTCPMux::Broker
   getter upstream = Deque(MeshCoreTCPMux::SendFrame).new
   getter downstream = Hash(Int64, Array(Bytes)).new { |h, id| h[id] = [] of Bytes }
@@ -63,18 +63,18 @@ private class GapHarness
   end
 end
 
-# Synthetic four-byte ACK token 01 02 03 04 (not a device identity).
 private def gap_sent(token = Bytes[1_u8, 2_u8, 3_u8, 4_u8]) : Bytes
+  # Synthetic four-byte ACK token 01 02 03 04 (not a device identity).
   # SENT (0x06): routing mode, four-byte ACK token, then suggested timeout (u32 LE); acceptance
   # only.
   # Suggested timeout 8000 ms (0x1f40, u32 little-endian).
   Bytes[6_u8, 1_u8] + token + Bytes[0x40_u8, 0x1f_u8, 0_u8, 0_u8]
 end
 
-# Each command/result pair uses only synthetic identifiers. Login, status,
-# telemetry and discovery match a six-byte peer prefix; binary/anonymous replies
-# match the SENT tag; trace matches the command's tag AND authentication bytes.
 private def remote_vector(opcode : UInt8) : {Bytes, Bytes}
+  # Each command/result pair uses only synthetic identifiers. Login, status,
+  # telemetry and discovery match a six-byte peer prefix; binary/anonymous replies
+  # match the SENT tag; trace matches the command's tag AND authentication bytes.
   # Synthetic six-byte peer public-key prefix 01..06; used only for routing matches.
   peer = Bytes[1_u8, 2_u8, 3_u8, 4_u8, 5_u8, 6_u8]
   command = case opcode

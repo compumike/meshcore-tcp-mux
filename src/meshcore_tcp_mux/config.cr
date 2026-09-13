@@ -1,7 +1,7 @@
-module MeshCoreTCPMux
-  # Limits count queued and currently written data. There is intentionally no
-  # fixed client-count cap: each connection has its own finite budgets.
+class MeshCoreTCPMux
   class Config
+    # Limits count queued and currently written data. There is intentionally no
+    # fixed client-count cap: each connection has its own finite budgets.
     property listen_host = "127.0.0.1"
     property listen_port = 5001
     property command_limit = 16
@@ -32,7 +32,7 @@ module MeshCoreTCPMux
     end
   end
 
-  module Clock
+  class Clock
     ORIGIN = Time.instant
 
     def self.now : Time::Span

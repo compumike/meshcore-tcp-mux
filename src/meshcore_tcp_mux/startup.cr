@@ -1,9 +1,9 @@
-module MeshCoreTCPMux
-  # Native TCP retains at most four outgoing frames across client replacement.
-  # Five consecutive SELF_INFO replies followed by DEVICE_INFO therefore prove
-  # that we have crossed the newly submitted handshake, not just stale output.
+class MeshCoreTCPMux
   class Startup
     class Error < Exception
+      # Native TCP retains at most four outgoing frames across client replacement.
+      # Five consecutive SELF_INFO replies followed by DEVICE_INFO therefore prove
+      # that we have crossed the newly submitted handshake, not just stale output.
     end
 
     getter self_info : Bytes?
@@ -37,8 +37,8 @@ module MeshCoreTCPMux
       raise Error.new("startup synchronization timeout") if !@ready && now >= @deadline
     end
 
-    # Returns the next internal command, if any. No startup output is public.
     def receive(payload : Bytes, now : Time::Span) : Bytes?
+      # Returns the next internal command, if any. No startup output is public.
       check_deadline(now)
       raise Error.new("empty startup response") if payload.empty?
       return nil if payload[0] >= 0x80

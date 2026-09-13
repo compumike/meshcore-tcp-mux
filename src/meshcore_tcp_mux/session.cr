@@ -1,6 +1,6 @@
 require "deque"
 
-module MeshCoreTCPMux
+class MeshCoreTCPMux
   record Command, payload : Bytes, queued_at : Time::Span
   record PendingSync, minimum_pop : Int64, deadline : Time::Span
   record WriteBudget, bytes : Int32, deadline : Time::Span

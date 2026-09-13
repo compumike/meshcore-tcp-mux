@@ -3,11 +3,11 @@ require "./session"
 require "./protocol"
 require "./leases"
 
-module MeshCoreTCPMux
-  # All mutable protocol state lives here. Socket fibers exchange events with
-  # the runtime; they never inspect or modify these queues and transactions.
+class MeshCoreTCPMux
   class Broker
     class Transaction
+      # All mutable protocol state lives here. Socket fibers exchange events with
+      # the runtime; they never inspect or modify these queues and transactions.
       getter owner : Int64
       getter command : Bytes
       getter descriptor : Protocol::CommandDescriptor

@@ -1,8 +1,3 @@
-# End-to-end fault tests use only loopback sockets and a scripted companion.
-# Each upstream connection is an epoch; uncertainty closes its downstream clients
-# and must never replay their old commands. Helpers hide framing, not responses:
-# the test explicitly tells the companion when to reply, drop, or close.
-
 require "./spec_helper"
 require "../src/meshcore_tcp_mux/runtime"
 require "./support/runtime_companion"
@@ -111,6 +106,11 @@ private def orphan_message : Bytes
 end
 
 describe MeshCoreTCPMux::Runtime, "fault and epoch boundaries" do
+  # End-to-end fault tests use only loopback sockets and a scripted companion.
+  # Each upstream connection is an epoch; uncertainty closes its downstream clients
+  # and must never replay their old commands. Helpers hide framing, not responses:
+  # the test explicitly tells the companion when to reply, drop, or close.
+
   it "times out A without dispatching queued B or replaying it after reconnect" do
     companion = SpecSupport::RuntimeCompanion.new
     runtime, config, runtime_done = start_fault_runtime(companion)

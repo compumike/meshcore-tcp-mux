@@ -1,14 +1,14 @@
-# Scripted loopback companion: startup is automatic, then each command waits
-# for a test directive. Drop omits a reply but keeps the socket open; RawAndClose
-# writes exactly the supplied wire bytes before disconnecting. Identity bytes
-# select synthetic public keys across reconnects, not real radio identities.
-
 require "../../src/meshcore_tcp_mux/config"
 require "../../src/meshcore_tcp_mux/frame_codec"
 require "./native_startup"
 
-module SpecSupport
+class SpecSupport
   class RuntimeCompanion
+    # Scripted loopback companion: startup is automatic, then each command waits
+    # for a test directive. Drop omits a reply but keeps the socket open; RawAndClose
+    # writes exactly the supplied wire bytes before disconnecting. Identity bytes
+    # select synthetic public keys across reconnects, not real radio identities.
+
     record Command, epoch : Int32, payload : Bytes
     record Reply, payload : Bytes
     record RawAndClose, bytes : Bytes
@@ -29,8 +29,8 @@ module SpecSupport
     @stopped = false
     @socket : TCPSocket? = nil
 
-    # Default fake identity marker; later epochs reuse the last supplied value.
     def initialize(@identities : Array(UInt8) = [0xa5_u8])
+      # Default fake identity marker; later epochs reuse the last supplied value.
       @server = TCPServer.new("127.0.0.1", 0)
       @port = @server.local_address.port
       spawn run

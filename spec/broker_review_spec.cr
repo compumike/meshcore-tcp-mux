@@ -1,7 +1,3 @@
-# Event-order regressions: writer completion and reader response notifications
-# can arrive in either order. These tests drive time manually and acknowledge
-# only selected writes so races are reproducible. Bytes are decoded payloads.
-
 require "./spec_helper"
 require "../src/meshcore_tcp_mux/broker"
 
@@ -28,6 +24,10 @@ private def review_ready_broker(config = MeshCoreTCPMux::Config.new) : MeshCoreT
 end
 
 describe "broker event-order regressions" do
+  # Event-order regressions: writer completion and reader response notifications
+  # can arrive in either order. These tests drive time manually and acknowledge
+  # only selected writes so races are reproducible. Bytes are decoded payloads.
+
   it "does not expire an upstream write after its actual response arrived first" do
     broker = review_ready_broker
     # GET_DEVICE_TIME (5): local clock query.

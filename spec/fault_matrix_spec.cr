@@ -1,8 +1,3 @@
-# Each phase fixture leaves one transaction awaiting a real companion reply.
-# A second client's command is queued behind it. A timeout or failed upstream
-# write makes attribution uncertain: close the whole epoch rather than dispatch
-# or replay queued work. Byte fixtures are decoded payloads, with LE integers.
-
 require "./spec_helper"
 require "../src/meshcore_tcp_mux/broker"
 
@@ -36,9 +31,9 @@ private def matrix_channel : Bytes
   Bytes[3_u8, 0_u8, 0_u8, 0_u8, 0_u8, 0_u8, 0_u8]
 end
 
-# Returns a broker stopped in the requested transaction phase and the instant
-# from which that phase's response deadline runs.
 private def matrix_phase(phase : Symbol) : {MeshCoreTCPMux::Broker, Time::Span}
+  # Returns a broker stopped in the requested transaction phase and the instant
+  # from which that phase's response deadline runs.
   config = MeshCoreTCPMux::Config.new
   config.response_timeout = 1.second
   config.contacts_timeout = 10.seconds
@@ -127,6 +122,11 @@ private def assert_matrix_epoch_ended(broker : MeshCoreTCPMux::Broker)
 end
 
 describe "literal transaction fault matrix" do
+  # Each phase fixture leaves one transaction awaiting a real companion reply.
+  # A second client's command is queued behind it. A timeout or failed upstream
+  # write makes attribution uncertain: close the whole epoch rather than dispatch
+  # or replay queued work. Byte fixtures are decoded payloads, with LE integers.
+
   phases = [:single, :contacts_progress, :internal_inbox, :self_telemetry,
             :scope_setup, :scope_send, :scope_restore, :signing_data]
 

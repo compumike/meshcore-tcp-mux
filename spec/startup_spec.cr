@@ -1,8 +1,3 @@
-# Startup fencing discards stale pre-boundary traffic: five consecutive
-# SELF_INFO replies exceed the firmware's four retained-response slots. A fresh
-# DEVICE_INFO and acknowledged default-scope reset are then required for ready.
-# These fixtures are decoded payloads, sometimes opcode-only stale markers.
-
 require "./spec_helper"
 require "../src/meshcore_tcp_mux/startup"
 
@@ -23,6 +18,11 @@ private def device_reply
 end
 
 describe MeshCoreTCPMux::Startup do
+  # Startup fencing discards stale pre-boundary traffic: five consecutive
+  # SELF_INFO replies exceed the firmware's four retained-response slots. A fresh
+  # DEVICE_INFO and acknowledged default-scope reset are then required for ready.
+  # These fixtures are decoded payloads, sometimes opcode-only stale markers.
+
   it "constructs five correctly reserved app starts and the target-13 query" do
     probes = MeshCoreTCPMux::Startup.probes
     probes.size.should eq(6)

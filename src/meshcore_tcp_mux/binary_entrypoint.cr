@@ -2,7 +2,7 @@ require "option_parser"
 require "./upstream"
 require "./runtime"
 
-module MeshCoreTCPMux
+class MeshCoreTCPMux
   class BinaryEntrypoint
     def initialize
       host : String? = nil

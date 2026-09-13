@@ -1,5 +1,5 @@
-module MeshCoreTCPMux
-  module FrameCodec
+class MeshCoreTCPMux
+  class FrameCodec
     MAX_PAYLOAD_SIZE           = 176
     CLIENT_TO_COMPANION_MARKER = '<'.ord.to_u8
     COMPANION_TO_CLIENT_MARKER = '>'.ord.to_u8
@@ -16,12 +16,12 @@ module MeshCoreTCPMux
     class TruncatedFrameError < Error
     end
 
-    # Incrementally removes the TCP envelope and returns owned payloads.
-    #
-    # `now` must come from a monotonic clock. The decoder deliberately does not
-    # read a clock itself, which keeps deadline handling deterministic and lets a
-    # connection's timer fiber use `check_deadline` while no bytes arrive.
     class Decoder
+      # Incrementally removes the TCP envelope and returns owned payloads.
+      #
+      # `now` must come from a monotonic clock. The decoder deliberately does not
+      # read a clock itself, which keeps deadline handling deterministic and lets a
+      # connection's timer fiber use `check_deadline` while no bytes arrive.
       getter marker : UInt8
       getter assembly_timeout : Time::Span
 
@@ -36,9 +36,9 @@ module MeshCoreTCPMux
         raise ArgumentError.new("assembly timeout must be positive") unless @assembly_timeout > Time::Span.zero
       end
 
-      # Accepts any portion of the stream and yields every payload completed by
-      # it. Yielded slices never alias `bytes` or the decoder's scratch space.
       def feed(bytes : Bytes, now : Time::Span, & : Bytes ->) : Nil
+        # Accepts any portion of the stream and yields every payload completed by
+        # it. Yielded slices never alias `bytes` or the decoder's scratch space.
         check_deadline(now)
         offset = 0
 
@@ -71,9 +71,9 @@ module MeshCoreTCPMux
         end
       end
 
-      # Raises once the absolute assembly deadline has elapsed. An idle decoder
-      # has no deadline.
       def check_deadline(now : Time::Span) : Nil
+        # Raises once the absolute assembly deadline has elapsed. An idle decoder
+        # has no deadline.
         if started_at = @started_at
           if now - started_at >= @assembly_timeout
             raise FrameDeadlineExceededError.new("frame assembly deadline exceeded")
@@ -81,9 +81,9 @@ module MeshCoreTCPMux
         end
       end
 
-      # Validates EOF. A clean frame boundary is valid; any retained byte means
-      # the peer disconnected in the middle of a frame.
       def finish : Nil
+        # Validates EOF. A clean frame boundary is valid; any retained byte means
+        # the peer disconnected in the middle of a frame.
         return unless partial?
         raise TruncatedFrameError.new("EOF in incomplete frame")
       end
