@@ -1,5 +1,12 @@
 *~
+/__pycache__/
+__pycache__/
+*.py[cod]
+/.venv/
 /design_docs/
 /local_tmp/
 /out/
 /.crystal-cache/
+test-results.md
+
+/.github/

@@ -1,0 +1,26 @@
+[Unit]
+Description=MeshCore TCP multiplexer
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+DynamicUser=yes
+EnvironmentFile=/etc/meshcore-tcp-mux.env
+ExecStart=/usr/local/bin/meshcore-tcp-mux --upstream-host ${MESHCORE_UPSTREAM_HOST} --upstream-port 5000 --listen-host 127.0.0.1 --listen-port 5001
+Restart=on-failure
+RestartSec=2
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictNamespaces=yes
+LockPersonality=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+
+[Install]
+WantedBy=multi-user.target

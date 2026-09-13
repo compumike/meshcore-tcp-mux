@@ -1,0 +1,110 @@
+require "./spec_helper"
+require "../src/meshcore_tcp_mux/broker"
+
+private alias BrokerReviewAction = MeshCoreTCPMux::Action
+
+private def review_sends(actions : Array(BrokerReviewAction), session : Int64) : Array(MeshCoreTCPMux::SendFrame)
+  actions.compact_map do |action|
+    action.as?(MeshCoreTCPMux::SendFrame).try { |send| send if send.session == session }
+  end
+end
+
+private def review_ready_broker(config = MeshCoreTCPMux::Config.new) : MeshCoreTCPMux::Broker
+  broker = MeshCoreTCPMux::Broker.new(77_i64, Bytes.new(32), config)
+  broker.admit(1_i64, Time::Span.zero)
+  pop = review_sends(broker.take_actions, 0_i64).first
+  pop.payload.should eq(Bytes[10_u8])
+  broker.written(0_i64, pop.epoch, pop.write_id, Time::Span.zero)
+  broker.upstream_frame(Bytes[10_u8], Time::Span.zero)
+  broker.take_actions
+  broker
+end
+
+describe "broker event-order regressions" do
+  it "does not expire an upstream write after its actual response arrived first" do
+    broker = review_ready_broker
+    broker.client_frame(1_i64, Bytes[5_u8], Time::Span.zero)
+    command_write = review_sends(broker.take_actions, 0_i64).first
+
+    # The reader event can reach the broker before the writer completion event.
+    broker.upstream_frame(Bytes[9_u8, 1_u8, 2_u8, 3_u8, 4_u8], 1.millisecond)
+    review_sends(broker.take_actions, 1_i64).size.should eq(1)
+    broker.tick(5.seconds)
+    broker.failed.should be_false
+
+    # Its eventually delivered completion remains a harmless stale event.
+    broker.written(0_i64, command_write.epoch, command_write.write_id, 6.seconds)
+    broker.failed.should be_false
+  end
+
+  it "gives every hidden scope substep its own response deadline" do
+    config = MeshCoreTCPMux::Config.new
+    config.response_timeout = 5.seconds
+    config.write_timeout = 30.seconds
+    broker = review_ready_broker(config)
+
+    broker.client_frame(1_i64, Bytes[54_u8, 1_u8], Time::Span.zero)
+    broker.take_actions
+    channel_send = Bytes[3_u8, 0_u8, 0_u8, 0_u8, 0_u8, 0_u8, 0_u8]
+    broker.client_frame(1_i64, channel_send, Time::Span.zero)
+    setup = review_sends(broker.take_actions, 0_i64).first
+    setup.payload.should eq(Bytes[54_u8, 1_u8])
+    broker.written(0_i64, setup.epoch, setup.write_id, Time::Span.zero)
+
+    broker.upstream_frame(Bytes[0_u8], 4.seconds)
+    command = review_sends(broker.take_actions, 0_i64).first
+    command.payload.should eq(channel_send)
+    broker.written(0_i64, command.epoch, command.write_id, 4.seconds)
+
+    broker.upstream_frame(Bytes[0_u8], 8.seconds)
+    actions = broker.take_actions
+    review_sends(actions, 1_i64).map(&.payload).should eq([Bytes[0_u8]])
+    restore = review_sends(actions, 0_i64).first
+    restore.payload.should eq(Bytes[54_u8, 0_u8])
+    broker.failed.should be_false
+    broker.written(0_i64, restore.epoch, restore.write_id, 8.seconds)
+
+    broker.upstream_frame(Bytes[0_u8], 12.seconds)
+    broker.failed.should be_false
+    broker.active.should be_nil
+  end
+
+  it "waits for a live owner to write a maintenance result before ending the epoch" do
+    config = MeshCoreTCPMux::Config.new
+    config.maintenance = true
+    broker = review_ready_broker(config)
+    reset = Bytes[51_u8, 'r'.ord.to_u8, 'e'.ord.to_u8, 's'.ord.to_u8, 'e'.ord.to_u8, 't'.ord.to_u8]
+    broker.client_frame(1_i64, reset, Time::Span.zero)
+    upstream = review_sends(broker.take_actions, 0_i64).first
+    broker.written(0_i64, upstream.epoch, upstream.write_id, Time::Span.zero)
+
+    broker.upstream_frame(Bytes[0_u8], 1.millisecond)
+    actions = broker.take_actions
+    result = review_sends(actions, 1_i64).first
+    actions.any?(MeshCoreTCPMux::CloseSession).should be_false
+    actions.any?(MeshCoreTCPMux::EndEpoch).should be_false
+
+    broker.written(1_i64, result.epoch, result.write_id, 2.milliseconds)
+    completion = broker.take_actions
+    completion.any?(MeshCoreTCPMux::CloseSession).should be_true
+    completion.any?(MeshCoreTCPMux::EndEpoch).should be_true
+  end
+
+  it "ends maintenance promptly if its owner closes while the result is pending" do
+    config = MeshCoreTCPMux::Config.new
+    config.maintenance = true
+    broker = review_ready_broker(config)
+    reset = Bytes[51_u8, 'r'.ord.to_u8, 'e'.ord.to_u8, 's'.ord.to_u8, 'e'.ord.to_u8, 't'.ord.to_u8]
+    broker.client_frame(1_i64, reset, Time::Span.zero)
+    upstream = review_sends(broker.take_actions, 0_i64).first
+    broker.written(0_i64, upstream.epoch, upstream.write_id, Time::Span.zero)
+    broker.upstream_frame(Bytes[0_u8], 1.millisecond)
+    broker.take_actions # The result has been handed to the downstream writer.
+
+    broker.client_closed(1_i64, 2.milliseconds)
+    actions = broker.take_actions
+    actions.any?(MeshCoreTCPMux::CloseSession).should be_true
+    actions.any?(MeshCoreTCPMux::EndEpoch).should be_true
+    broker.active.should be_nil
+  end
+end
