@@ -1,17 +1,20 @@
 class MeshCoreTCPMux
   # Namespace for the TCP multiplexer: transport, protocol validation, and per-client state.
   class Config
-    # Shared runtime/broker settings: listener address, queue budgets, deadlines, and permissions.
-    # Limits count queued and currently written data. There is intentionally no
-    # fixed client-count cap: each connection has its own finite budgets.
+    # Shared runtime/broker settings: listener address, internal safety policies,
+    # operational deadlines, and permissions. Only settings with a credible
+    # deployment-specific tradeoff are exposed by the command-line interface;
+    # the other mutable properties remain useful for deterministic specs.
+    #
+    # Queue limits count queued and currently active work. FrameCodec's fixed
+    # 176-byte payload maximum means entry/frame counts also impose finite byte
+    # bounds, so separate byte budgets would be redundant.
     property listen_host = "127.0.0.1"
     property listen_port = 5001
     property command_limit = 16
     property command_age = 3.seconds
     property inbox_entries = 256
-    property inbox_bytes = 64 * 1024
     property output_frames = 512
-    property output_bytes = 128 * 1024
     property frame_timeout = 5.seconds
     property write_timeout = 5.seconds
     property response_timeout = 5.seconds
@@ -24,12 +27,15 @@ class MeshCoreTCPMux
 
     def validate! : Nil
       raise ArgumentError.new("listen port must be between 1 and 65535") unless (1..65535).includes?(@listen_port)
-      unless {@command_limit, @inbox_entries, @inbox_bytes, @output_frames, @output_bytes}.all? { |n| n > 0 }
+      unless {@command_limit, @inbox_entries, @output_frames}.all? { |n| n > 0 }
         raise ArgumentError.new("queue budgets must be positive")
       end
       unless {@command_age, @frame_timeout, @write_timeout, @response_timeout, @contacts_timeout,
               @startup_timeout, @signing_timeout, @poll_interval}.all? { |duration| duration > Time::Span.zero }
         raise ArgumentError.new("deadlines and polling interval must be positive")
+      end
+      if @contacts_timeout < @response_timeout
+        raise ArgumentError.new("contacts total timeout must not be shorter than its idle timeout")
       end
     end
   end

@@ -114,9 +114,7 @@ class MeshCoreTCPMux
       if id == 0
         @upstream_writes.delete(write_id)
       elsif session = @sessions[id]?
-        if budget = session.writes.delete(write_id)
-          session.output_bytes -= budget.bytes
-        end
+        session.writes.delete(write_id)
         if (transaction = @active) && transaction.maintenance && transaction.step == :maintenance_result &&
            transaction.owner == id && transaction.maintenance_write_id == write_id
           finish_transaction(transaction)
@@ -221,7 +219,7 @@ class MeshCoreTCPMux
       # classified, otherwise its accepted byte count would have no owner.
       @signing.owner_gone(id) unless @active.try(&.owner) == id
       @order.delete(id)
-      @actions << Diagnostic.new("epoch=#{@epoch} session=#{id} close reason=#{reason.inspect} inbox_items=#{session.inbox.size} inbox_bytes=#{session.inbox_bytes} queued_commands=#{session.commands.size}", category)
+      @actions << Diagnostic.new("epoch=#{@epoch} session=#{id} close reason=#{reason.inspect} inbox_items=#{session.inbox.size} queued_commands=#{session.commands.size}", category)
       @actions << CloseSession.new(id, reason)
       if (transaction = @active) && transaction.maintenance && transaction.step == :maintenance_result && transaction.owner == id
         finish_transaction(transaction)
@@ -229,17 +227,16 @@ class MeshCoreTCPMux
     end
 
     private def emit(id : Int64, payload : Bytes) : Int64?
-      # Budget the three-byte TCP envelope as well as the payload, then request a downstream write.
+      # Bound the count of queued and in-flight frames, then request a downstream
+      # write. The protocol's fixed payload maximum also bounds their total bytes.
       # Return its ID for completion tracking, or nil when the client is gone or too slow.
       return nil unless session = @sessions[id]?
-      size = payload.size + 3
-      if session.writes.size >= @config.output_frames || session.output_bytes + size > @config.output_bytes
+      if session.writes.size >= @config.output_frames
         remove(id, "output queue overflow")
         return nil
       end
       @next_write += 1
-      session.writes[@next_write] = WriteBudget.new(size, @now + @config.write_timeout)
-      session.output_bytes += size
+      session.writes[@next_write] = WriteBudget.new(@now + @config.write_timeout)
       @actions << SendFrame.new(id, @epoch, @next_write, payload)
       @next_write
     end
@@ -554,16 +551,16 @@ class MeshCoreTCPMux
     end
 
     private def fan_out(payload : Bytes) : Nil
-      # Share immutable inbox payloads across clients but maintain separate queue positions and budgets.
+      # Share immutable inbox payloads across clients but maintain separate queue positions and limits.
+      # FrameCodec's payload maximum makes the entry count a hard byte bound too.
       # An empty-to-nonempty transition sends MSG_WAITING (0x83), unless a waiting sync can receive immediately.
       @sessions.values.each do |session|
-        if session.inbox.size >= @config.inbox_entries || session.inbox_bytes + payload.size > @config.inbox_bytes
+        if session.inbox.size >= @config.inbox_entries
           remove(session.id, "inbox overflow")
           next
         end
         was_empty = session.inbox.empty?
         session.inbox << payload
-        session.inbox_bytes += payload.size
         if session.sync
           session.sync = nil
           deliver_item(session)
@@ -578,7 +575,6 @@ class MeshCoreTCPMux
       item = session.inbox.first
       if emit(session.id, Protocol.downgrade_inbox(item, session.target_version))
         session.inbox.shift
-        session.inbox_bytes -= item.size
       end
     end
   end

@@ -4,7 +4,7 @@ class MeshCoreTCPMux
   # Namespace for the TCP multiplexer: transport, protocol validation, and per-client state.
   record Command, payload : Bytes, queued_at : Time::Span
   record PendingSync, minimum_pop : Int64, deadline : Time::Span
-  record WriteBudget, bytes : Int32, deadline : Time::Span
+  record WriteBudget, deadline : Time::Span
 
   class Session
     # Holds one downstream client's command FIFO, independent inbox, requested protocol version,
@@ -13,8 +13,6 @@ class MeshCoreTCPMux
     getter commands = Deque(Command).new
     getter inbox = Deque(Bytes).new
     getter writes = Hash(Int64, WriteBudget).new
-    property inbox_bytes = 0
-    property output_bytes = 0
     property target_version = 0_u8
     property scope : Bytes = Bytes[0x36, 0] # SET_FLOOD_SCOPE_KEY: mode 0 without a key selects default scope.
     property sync : PendingSync? = nil
