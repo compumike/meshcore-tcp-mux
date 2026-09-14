@@ -141,6 +141,37 @@ describe MeshCoreTCPMux::Runtime, "fault and epoch boundaries" do
     companion.try &.stop
   end
 
+  it "never replays a transmit command after the upstream drops immediately after its write" do
+    companion = SpecSupport::RuntimeCompanion.new
+    runtime, config, runtime_done = start_fault_runtime(companion)
+    await_epoch_ready(companion, 1)
+    sender = admit_client(companion, config, 1)
+
+    # SEND_TXT_MSG (2): plain type 0, attempt 3, timestamp 0x12345678
+    # (u32 little-endian), synthetic six-byte destination 01..06, and body
+    # "x". The fake companion observes the complete command, then closes
+    # before SENT, modeling the point where execution is unknowable.
+    dm = Bytes[2_u8, 0_u8, 3_u8, 0x78_u8, 0x56_u8, 0x34_u8, 0x12_u8,
+      1_u8, 2_u8, 3_u8, 4_u8, 5_u8, 6_u8, 'x'.ord.to_u8]
+    send_command(sender, dm)
+    written = next_command(companion, 2_u8, 1)
+    written.payload.should eq(dm)
+    companion.drop
+    expect_closed(sender)
+
+    await_epoch_ready(companion, 2)
+    select
+    when command = companion.commands.receive
+      fail "uncertain transmit replayed in epoch 2: #{command.payload[0]}"
+    when timeout(200.milliseconds)
+    end
+  ensure
+    sender.try &.close
+    runtime.try &.stop
+    runtime_done.try &.receive
+    companion.try &.stop
+  end
+
   it "ends epochs on malformed and truncated upstream frames" do
     companion = SpecSupport::RuntimeCompanion.new
     runtime, config, runtime_done = start_fault_runtime(companion)

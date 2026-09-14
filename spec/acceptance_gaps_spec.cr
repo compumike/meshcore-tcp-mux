@@ -183,6 +183,45 @@ describe "remaining design acceptance invariants" do
     end
   end
 
+  it "rejects the specified cross-operation and same-operation remote competitors" do
+    # The native companion owns one shared pending-remote slot. Exercise the
+    # concrete interference patterns from the hardest-cases brief rather than
+    # assuming same-command contention proves cross-command contention.
+    pairs = [
+      {39_u8, 27_u8}, # Remote TELEMETRY followed by STATUS.
+      {26_u8, 50_u8}, # LOGIN followed by BINARY.
+      {52_u8, 39_u8}, # PATH_DISCOVERY followed by remote TELEMETRY.
+      {27_u8, 27_u8}, # Same STATUS operation for the same peer.
+    ]
+    pairs.each do |owner_opcode, competitor_opcode|
+      h = GapHarness.new
+      owner, _ = remote_vector(owner_opcode)
+      competitor, _ = remote_vector(competitor_opcode)
+      h.client(1_i64, owner)
+      h.upstream.shift.payload.should eq(owner)
+      h.response(gap_sent)
+      h.client(2_i64, competitor)
+      h.upstream.should be_empty
+      # ERR(BAD_STATE): client 2 cannot replace client 1's accepted remote lease.
+      h.downstream[2_i64].should eq([Bytes[1_u8, 4_u8]])
+    end
+
+    # A different destination does not create an independent firmware slot.
+    h = GapHarness.new
+    owner, _ = remote_vector(27_u8) # SEND_STATUS_REQ to synthetic peer 01..06.
+    competitor = owner.dup
+    # SEND_STATUS_REQ stores its 32-byte peer key at command offset 1. Change
+    # its first six bytes to the distinct synthetic peer prefix 06..01.
+    competitor[1, 6].copy_from(Bytes[6_u8, 5_u8, 4_u8, 3_u8, 2_u8, 1_u8])
+    h.client(1_i64, owner)
+    h.upstream.shift.payload.should eq(owner)
+    h.response(gap_sent)
+    h.client(2_i64, competitor)
+    h.upstream.should be_empty
+    # ERR(BAD_STATE): destination difference does not weaken exclusive ownership.
+    h.downstream[2_i64].should eq([Bytes[1_u8, 4_u8]])
+  end
+
   it "does not advance DM capacity for ERR or zero-token SENT and retains it after disconnect" do
     h = GapHarness.new
     # SEND_TXT_MSG (2): type 0/plain, attempt 2, timestamp bytes 3..6 (u32 LE), recipient prefix
@@ -300,18 +339,17 @@ describe "remaining design acceptance invariants" do
     broker.upstream_frame(Bytes[10_u8], Time::Span.zero)
     broker.take_actions
 
-    # ADVERT push (0x80) plus a 32-byte synthetic key; different fill bytes distinguish the
-    # broadcasts.
-    first = Bytes.new(33, 1_u8).tap { |p| p[0] = 0x80_u8 }
+    # LOG_RX_DATA (0x88): SNR and RSSI metadata followed by opaque packet
+    # bytes. Distinct packet bytes model a high-rate raw receive-log stream.
+    first = Bytes[0x88_u8, 1_u8, 2_u8, 0xaa_u8]
     broker.upstream_frame(first, Time::Span.zero)
     first_actions = broker.take_actions.compact_map(&.as?(MeshCoreTCPMux::SendFrame))
     healthy_write = first_actions.find { |a| a.session == 2 }.not_nil!
     broker.written(2_i64, healthy_write.epoch, healthy_write.write_id, Time::Span.zero)
     broker.take_actions
 
-    # ADVERT push (0x80) plus a 32-byte synthetic key; different fill bytes distinguish the
-    # broadcasts.
-    second = Bytes.new(33, 2_u8).tap { |p| p[0] = 0x80_u8 }
+    # A second LOG_RX_DATA fills only the non-reading client's output budget.
+    second = Bytes[0x88_u8, 3_u8, 4_u8, 0xbb_u8]
     broker.upstream_frame(second, Time::Span.zero)
     actions = broker.take_actions
     actions.compact_map(&.as?(MeshCoreTCPMux::CloseSession)).map(&.session).should eq([1_i64])

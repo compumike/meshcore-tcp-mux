@@ -76,6 +76,27 @@ describe MeshCoreTCPMux::DmRing do
     ring.confirm(confirmed(99)).should be_false
   end
 
+  it "accepts out-of-order confirmations without moving the protected next slot" do
+    ring = MeshCoreTCPMux::DmRing.new
+    8.times { |i| ring.accepted(sent((i + 1).to_u32), 0.seconds) }
+    ring.next_slot.should eq(0)
+
+    # SEND_CONFIRMED pushes may arrive in radio order rather than send order.
+    # Settling tokens 6, 3, and 8 creates holes elsewhere in the eight-slot
+    # ring, but slot zero still contains token 1 and remains protected.
+    [6_u32, 3_u32, 8_u32].each do |token|
+      ring.confirm(confirmed(token)).should be_true
+    end
+    ring.pending_count(0.seconds).should eq(5)
+    ring.available?(0.seconds).should be_false
+    ring.next_slot.should eq(0)
+
+    ring.confirm(confirmed(1)).should be_true
+    ring.available?(0.seconds).should be_true
+    ring.accepted(sent(9), 0.seconds)
+    ring.next_slot.should eq(1)
+  end
+
   it "rejects malformed actual responses before reading fields" do
     ring = MeshCoreTCPMux::DmRing.new
     # Truncated SENT (0x06): missing routing mode, ACK token, and timeout.

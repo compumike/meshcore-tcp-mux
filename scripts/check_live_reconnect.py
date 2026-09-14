@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
-"""Read-only live upstream disconnect/reconnect gate through a local byte relay.
+"""Read-only live upstream disconnect/reconnect gates through a local frame relay.
 
 The physical companion must have no existing mux, CLI, Home Assistant, BLE, or
-USB command producer. This script deliberately drops the mux-owned upstream TCP
-connection; it does not reboot the node or send radio/configuration commands
-beyond the mux's normal startup synchronization.
+USB command producer. The completed-drop scenario deliberately closes the
+mux-owned upstream TCP connection. The in-flight scenarios withhold genuine
+read-only replies until the mux closes its ambiguous epoch. None of the
+scenarios reboot the node or send radio/configuration commands beyond the mux's
+normal startup synchronization.
 """
 
 from __future__ import annotations
@@ -48,8 +50,20 @@ class RelayConnection:
         )
 
 
-class ExclusiveByteRelay:
-    """Allows at most one relay-owned physical TCP connection at a time."""
+class RelayFrame:
+    """Records one complete companion envelope without retaining its payload."""
+
+    def __init__(
+        self, generation: int, direction: str, opcode: int, frame_bytes: int
+    ) -> None:
+        self.generation = generation
+        self.direction = direction
+        self.opcode = opcode
+        self.frame_bytes = frame_bytes
+
+
+class ExclusiveFrameRelay:
+    """Owns one physical connection and exposes bounded frame fault controls."""
 
     def __init__(self, physical_host: str, physical_port: int) -> None:
         self.physical_host = physical_host
@@ -58,10 +72,19 @@ class ExclusiveByteRelay:
         self.active: RelayConnection | None = None
         self.connections: asyncio.Queue[int | Exception] = asyncio.Queue()
         self.closed: asyncio.Queue[int] = asyncio.Queue()
+        self.fault_reached: asyncio.Queue[RelayFrame] = asyncio.Queue()
+        self.frame_counts: dict[tuple[int, str, int], int] = {}
+        # Metadata-only bounded history supports exact order assertions without
+        # retaining contact records, message bodies, scope keys, or identities.
+        self.frame_history: deque[RelayFrame] = deque(maxlen=4096)
         self._physical_lock = asyncio.Lock()
         self._tasks: set[asyncio.Task[None]] = set()
         self._generation = 0
         self._closing = False
+        self._hold_response: tuple[int, int] | None = None
+        self._pause_after_response: tuple[int, int, int] | None = None
+        self._pause_match_count = 0
+        self._responses_paused = False
 
     @property
     def port(self) -> int:
@@ -107,8 +130,24 @@ class ExclusiveByteRelay:
             self.active = connection
             await self.connections.put(connection.generation)
             pumps = {
-                asyncio.create_task(self._pump(mux_reader, physical_writer)),
-                asyncio.create_task(self._pump(physical_reader, mux_writer)),
+                asyncio.create_task(
+                    self._pump(
+                        mux_reader,
+                        physical_writer,
+                        connection.generation,
+                        "command",
+                        ord("<"),
+                    )
+                ),
+                asyncio.create_task(
+                    self._pump(
+                        physical_reader,
+                        mux_writer,
+                        connection.generation,
+                        "response",
+                        ord(">"),
+                    )
+                ),
             }
             try:
                 done, pending = await asyncio.wait(
@@ -124,11 +163,101 @@ class ExclusiveByteRelay:
                 await self.closed.put(connection.generation)
 
     async def _pump(
-        self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
+        self,
+        reader: asyncio.StreamReader,
+        writer: asyncio.StreamWriter,
+        generation: int,
+        direction: str,
+        marker: int,
     ) -> None:
+        # Parsing full TCP envelopes lets a fault point name the exact command
+        # or response. Payload bytes remain opaque and are never logged.
+        buffered = bytearray()
         while data := await reader.read(64 * 1024):
-            writer.write(data)
-            await writer.drain()
+            buffered.extend(data)
+            while len(buffered) >= 3:
+                if buffered[0] != marker:
+                    raise AssertionError(
+                        f"relay saw marker 0x{buffered[0]:02x}; "
+                        f"expected 0x{marker:02x} for {direction}"
+                    )
+                payload_length = buffered[1] | (buffered[2] << 8)
+                frame_length = payload_length + 3
+                if payload_length < 1 or payload_length > 176:
+                    raise AssertionError(
+                        f"relay saw invalid {direction} payload length "
+                        f"{payload_length}"
+                    )
+                if len(buffered) < frame_length:
+                    break
+                encoded = bytes(buffered[:frame_length])
+                del buffered[:frame_length]
+                frame = RelayFrame(
+                    generation, direction, encoded[3], frame_length
+                )
+                count_key = (generation, direction, frame.opcode)
+                self.frame_counts[count_key] = self.frame_counts.get(count_key, 0) + 1
+                self.frame_history.append(frame)
+                if direction == "response" and await self._withhold(frame):
+                    continue
+                writer.write(encoded)
+                await writer.drain()
+        if buffered:
+            raise AssertionError(
+                f"relay source closed with {len(buffered)} incomplete "
+                f"{direction} byte(s)"
+            )
+
+    async def _withhold(self, frame: RelayFrame) -> bool:
+        if self._responses_paused:
+            return True
+        if self._hold_response == (frame.generation, frame.opcode):
+            self._hold_response = None
+            await self.fault_reached.put(frame)
+            return True
+        pause = self._pause_after_response
+        if pause and pause[:2] == (frame.generation, frame.opcode):
+            self._pause_match_count += 1
+            if self._pause_match_count == pause[2]:
+                # Forward the selected progress frame, then withhold everything
+                # following it so the mux observes a genuinely partial stream.
+                self._pause_after_response = None
+                self._responses_paused = True
+                await self.fault_reached.put(frame)
+        return False
+
+    def hold_next_response(self, generation: int, opcode: int) -> None:
+        if self._hold_response or self._pause_after_response:
+            raise AssertionError("a relay fault point is already armed")
+        self._hold_response = (generation, opcode)
+
+    def pause_after_response(
+        self, generation: int, opcode: int, occurrence: int = 1
+    ) -> None:
+        if occurrence < 1:
+            raise AssertionError("response occurrence must be positive")
+        if self._hold_response or self._pause_after_response:
+            raise AssertionError("a relay fault point is already armed")
+        self._pause_after_response = (generation, opcode, occurrence)
+        self._pause_match_count = 0
+
+    async def wait_fault(self, generation: int, opcode: int) -> RelayFrame:
+        frame = await asyncio.wait_for(self.fault_reached.get(), timeout=8)
+        if (frame.generation, frame.opcode) != (generation, opcode):
+            raise AssertionError(
+                "unexpected relay fault point: "
+                f"generation={frame.generation} opcode=0x{frame.opcode:02x}"
+            )
+        return frame
+
+    def count_frames(self, generation: int, direction: str, opcode: int) -> int:
+        return self.frame_counts.get((generation, direction, opcode), 0)
+
+    def reset_faults(self) -> None:
+        self._hold_response = None
+        self._pause_after_response = None
+        self._pause_match_count = 0
+        self._responses_paused = False
 
     async def drop(self, generation: int) -> None:
         connection = self.active
@@ -231,7 +360,7 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
         flush=True,
     )
 
-    relay = ExclusiveByteRelay(args.physical_host, args.physical_port)
+    relay = ExclusiveFrameRelay(args.physical_host, args.physical_port)
     process: asyncio.subprocess.Process | None = None
     stderr_task: asyncio.Task[None] | None = None
     ready: asyncio.Queue[int] = asyncio.Queue()
@@ -252,6 +381,8 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
             str(listen_port),
             "--poll-interval",
             "60",
+            "--response-timeout",
+            str(args.response_timeout),
             stdout=asyncio.subprocess.DEVNULL,
             stderr=asyncio.subprocess.PIPE,
         )
@@ -274,11 +405,57 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
             raise AssertionError("generation 1 clients observed different identities")
 
         disconnected = tuple(subscribe_disconnect(client) for client in old_pair)
-        await relay.drop(1)
+        in_flight_tasks: list[asyncio.Task[Any]] = []
+        if args.scenario == "completed-drop":
+            await relay.drop(1)
+        elif args.scenario == "single-timeout":
+            # GET_DEVICE_TIME (0x05) expects CURRENT_TIME (0x09). Withhold the
+            # real reply, then queue GET_BATT_AND_STORAGE (0x14) behind it.
+            relay.hold_next_response(1, 0x09)
+            in_flight_tasks.append(
+                asyncio.create_task(old_pair[0].commands.get_time())
+            )
+            await relay.wait_fault(1, 0x09)
+            in_flight_tasks.append(
+                asyncio.create_task(old_pair[1].commands.get_bat())
+            )
+        elif args.scenario == "contacts-timeout":
+            # GET_CONTACTS (0x04) yields CONTACTS_START (0x02), CONTACT (0x03)
+            # records, and END_OF_CONTACTS (0x04). Forward one real contact,
+            # then withhold the rest of the old physical response stream.
+            relay.pause_after_response(1, 0x03)
+            in_flight_tasks.append(
+                asyncio.create_task(old_pair[0].commands.get_contacts(timeout=20))
+            )
+            await relay.wait_fault(1, 0x03)
+            in_flight_tasks.append(
+                asyncio.create_task(old_pair[1].commands.get_bat())
+            )
+        else:
+            raise AssertionError(f"unknown scenario {args.scenario}")
         await asyncio.wait_for(
             asyncio.gather(*(queue.get() for queue in disconnected)),
             timeout=args.timeout,
         )
+        if args.scenario != "completed-drop":
+            closed_generation = await asyncio.wait_for(relay.closed.get(), timeout=3)
+            if closed_generation != 1:
+                raise AssertionError(
+                    f"expected generation 1 to close, got {closed_generation}"
+                )
+            relay.reset_faults()
+            # A queued successor must never enter the contaminated epoch. The
+            # relay sees every complete upstream command, so this is stronger
+            # evidence than merely observing that client B disconnected.
+            await asyncio.sleep(0)
+            queued_battery_was_sent = (
+                relay.count_frames(1, "command", 0x14) > 0
+            )
+            if queued_battery_was_sent:
+                raise AssertionError(
+                    "queued GET_BATT_AND_STORAGE entered the ambiguous epoch"
+                )
+            await asyncio.gather(*in_flight_tasks, return_exceptions=True)
 
         await expect_generation(relay.connections, 2)
         await expect_generation(ready, 2)
@@ -297,9 +474,16 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
         }
         if len(identities) != 1:
             raise AssertionError("physical identity changed across reconnect gate")
+        inbox_response_codes = (0x07, 0x08, 0x10, 0x11, 0x1B)
+        physical_inbox_items = sum(
+            relay.count_frames(generation, "response", opcode)
+            for generation in (1, 2)
+            for opcode in inbox_response_codes
+        )
 
         return {
             "status": "ok",
+            "scenario": args.scenario,
             "generations": 2,
             "physical_connections": 2,
             "old_sessions_closed": 2,
@@ -308,6 +492,8 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
             "contact_count_generation_1": old_results[0]["contacts"],
             "contact_count_generation_2": fresh_results[0]["contacts"],
             "meshcore_py": importlib.metadata.version("meshcore"),
+            "queued_successor_sent_on_old_epoch": False,
+            "physical_inbox_items_observed": physical_inbox_items,
         }
     except Exception as exc:
         detail = str(exc)
@@ -337,11 +523,24 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--physical-port", required=True, type=int)
     parser.add_argument("--mux-binary", default="out/meshcore-tcp-mux")
     parser.add_argument("--timeout", type=float, default=10.0)
+    parser.add_argument(
+        "--response-timeout",
+        type=float,
+        default=1.0,
+        help="Mux response/contacts-idle deadline used by in-flight scenarios",
+    )
+    parser.add_argument(
+        "--scenario",
+        choices=("completed-drop", "single-timeout", "contacts-timeout"),
+        default="completed-drop",
+    )
     args = parser.parse_args()
     if not 1 <= args.physical_port <= 65535:
         parser.error("--physical-port must be between 1 and 65535")
     if args.timeout <= 0:
         parser.error("--timeout must be positive")
+    if args.response_timeout <= 0:
+        parser.error("--response-timeout must be positive")
     return args
 
 

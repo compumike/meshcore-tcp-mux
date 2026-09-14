@@ -170,14 +170,124 @@ describe "broker stateful operations" do
     end
   end
 
-  it "preserves send bytes and native acceptance and does not create a retry or echo" do
+  it "classifies every supported push before an unrelated immediate response" do
     h = StatefulHarness.new
-    # These are two explicit client submissions, not permission for the mux
-    # to retry. Each must produce exactly one upstream send and one SENT reply.
-    2.times do |attempt|
-      h.now = attempt.seconds
+    h.replies.clear
+    # GET_DEVICE_TIME (5): client 1 owns the ordinary CURRENT_TIME reply slot.
+    h.client(1, Bytes[5])
+    h.upstream.shift.should eq(Bytes[5])
+
+    # Every native_v13 asynchronous response class is injected while that
+    # clock query is active. Global observations are broadcast; remote results
+    # without an accepted lease are discarded; MSG_WAITING is only an inbox
+    # pump hint. None may complete or refresh the clock transaction.
+    global_pushes = [
+      Bytes.new(33, 0_u8).tap { |p| p[0] = 0x80_u8 }, # ADVERT: opcode plus 32-byte key.
+      Bytes.new(33, 0_u8).tap { |p| p[0] = 0x81_u8 }, # PATH_UPDATED: opcode plus 32-byte key.
+      # SEND_CONFIRMED: four-byte token and four-byte little-endian round-trip time.
+      Bytes[0x82_u8, 1_u8, 2_u8, 3_u8, 4_u8, 5_u8, 0_u8, 0_u8, 0_u8],
+      # RAW_DATA: opcode and the minimum three opaque metadata bytes.
+      Bytes[0x84_u8, 0_u8, 0_u8, 0_u8],
+      # LOG_RX_DATA: opcode, SNR, and RSSI; no packet body is required.
+      Bytes[0x88_u8, 0_u8, 0_u8],
+      # NEW_ADVERT: the full 148-byte native contact record.
+      Bytes.new(148, 0_u8).tap { |p| p[0] = 0x8a_u8 },
+      # CONTROL_DATA: opcode and the minimum three opaque metadata bytes.
+      Bytes[0x8e_u8, 0_u8, 0_u8, 0_u8],
+      Bytes.new(33, 0_u8).tap { |p| p[0] = 0x8f_u8 }, # CONTACT_DELETED plus 32-byte key.
+      Bytes[0x90_u8],                                 # CONTACTS_FULL notification.
+      Bytes[0x91_u8, 0xaa_u8],                        # Unknown bounded extension push.
+    ]
+    orphaned_remote_results = [
+      # LOGIN_SUCCESS: metadata and a synthetic six-byte peer prefix.
+      Bytes[0x85_u8, 0_u8, 1_u8, 2_u8, 3_u8, 4_u8, 5_u8, 6_u8],
+      # LOGIN_FAILURE: metadata and a synthetic six-byte peer prefix.
+      Bytes[0x86_u8, 0_u8, 1_u8, 2_u8, 3_u8, 4_u8, 5_u8, 6_u8],
+      # STATUS_RESPONSE: common peer header plus one status byte.
+      Bytes[0x87_u8, 0_u8, 1_u8, 2_u8, 3_u8, 4_u8, 5_u8, 6_u8, 0_u8],
+      # TRACE_DATA: zero path bytes, flags zero, four-byte tag, four-byte
+      # authentication value, and the required final SNR byte.
+      Bytes[0x89_u8, 0_u8, 0_u8, 0_u8, 1_u8, 2_u8, 3_u8, 4_u8,
+        5_u8, 6_u8, 7_u8, 8_u8, 0_u8],
+      # TELEMETRY_RESPONSE: metadata and a synthetic six-byte peer prefix.
+      Bytes[0x8b_u8, 0_u8, 1_u8, 2_u8, 3_u8, 4_u8, 5_u8, 6_u8],
+      # BINARY_RESPONSE: metadata plus its four-byte correlation tag.
+      Bytes[0x8c_u8, 0_u8, 1_u8, 2_u8, 3_u8, 4_u8],
+      # PATH_DISCOVERY_RESPONSE: common peer header followed by empty
+      # outbound and inbound encoded paths.
+      Bytes[0x8d_u8, 0_u8, 1_u8, 2_u8, 3_u8, 4_u8, 5_u8, 6_u8, 0_u8, 0_u8],
+    ]
+
+    global_pushes.each { |push| h.response(push) }
+    orphaned_remote_results.each { |push| h.response(push) }
+    h.response(Bytes[0x83_u8]) # MSG_WAITING: hidden physical-inbox drain hint.
+    h.broker.active.should_not be_nil
+    h.upstream.should be_empty
+    h.replies[1_i64].should eq(global_pushes)
+    h.replies[2_i64].should eq(global_pushes)
+
+    # CURRENT_TIME (0x09): only this five-byte ordinary response completes the
+    # active GET_DEVICE_TIME, and it is visible only to its owner.
+    current_time = Bytes[9_u8, 0x78_u8, 0x56_u8, 0x34_u8, 0x12_u8]
+    h.response(current_time)
+    h.replies[1_i64].last.should eq(current_time)
+    h.replies[2_i64].should eq(global_pushes)
+    # Once the unrelated clock transaction completes, the earlier hidden
+    # MSG_WAITING hint may finally schedule a physical inbox pop.
+    h.upstream.shift.should eq(Bytes[10_u8]) # SYNC_NEXT_MESSAGE.
+    h.response(Bytes[10_u8])                 # NO_MORE_MESSAGES.
+    h.broker.active.should be_nil
+  end
+
+  it "broadcasts a late ACK immediately before or after an unrelated query reply" do
+    [:before, :after].each do |order|
+      h = StatefulHarness.new
+      # Client 1 sends a plain DM and receives native SENT acceptance with the
+      # synthetic token 01 bb cc dd. Delivery confirmation remains asynchronous.
       h.client(1, stateful_dm)
       h.upstream.shift.should eq(stateful_dm)
+      h.response(stateful_sent(1_u8))
+      h.replies.clear
+
+      # Client 2 now owns GET_DEVICE_TIME's immediate response slot.
+      h.client(2, Bytes[5_u8])
+      h.upstream.shift.should eq(Bytes[5_u8])
+      # SEND_CONFIRMED: token 01 bb cc dd and one-millisecond round trip.
+      acknowledgement = Bytes[0x82_u8, 1_u8, 0xbb_u8, 0xcc_u8, 0xdd_u8,
+        1_u8, 0_u8, 0_u8, 0_u8]
+      # CURRENT_TIME: timestamp 0x12345678 in little-endian byte order.
+      current_time = Bytes[9_u8, 0x78_u8, 0x56_u8, 0x34_u8, 0x12_u8]
+
+      if order == :before
+        h.response(acknowledgement)
+        h.broker.active.should_not be_nil
+        h.response(current_time)
+      else
+        h.response(current_time)
+        h.broker.active.should be_nil
+        h.response(acknowledgement)
+      end
+
+      # Actual ACK frames broadcast unchanged under the implemented contract;
+      # only the ordinary CURRENT_TIME is owned exclusively by client 2.
+      h.replies[1_i64].should eq([acknowledgement])
+      expected_second = order == :before ? [acknowledgement, current_time] : [current_time, acknowledgement]
+      h.replies[2_i64].should eq(expected_second)
+      h.broker.active.should be_nil
+    end
+  end
+
+  it "preserves send bytes and native acceptance and does not create a retry or echo" do
+    h = StatefulHarness.new
+    first_attempt = stateful_dm
+    retry_attempt = stateful_dm.dup
+    # SEND_TXT_MSG attempt is byte 2. The client preserves its logical timestamp
+    # and body while explicitly incrementing only this retry counter from 2 to 3.
+    retry_attempt[2] = 3_u8
+    [first_attempt, retry_attempt].each_with_index do |command, index|
+      h.now = index.seconds
+      h.client(1, command)
+      h.upstream.shift.should eq(command)
       h.response(stateful_sent)
     end
     h.replies[1_i64].should eq([stateful_sent, stateful_sent])
@@ -269,6 +379,43 @@ describe "broker stateful operations" do
     h.upstream.should be_empty
   end
 
+  it "restores scope after a failed send before dispatching the next client's send" do
+    h = StatefulHarness.new
+    # Client 1 selects an explicit synthetic 16-byte temporary scope key. The
+    # local OK acknowledges only its virtual setting; no upstream state changes
+    # until that client actually sends.
+    scope = Bytes.new(18, 0x42_u8)
+    scope[0] = 54_u8 # SET_FLOOD_SCOPE_KEY.
+    scope[1] = 0_u8  # Explicit-key mode; bytes 2..17 are the key.
+    h.client(1, scope)
+    h.replies.clear
+
+    # SEND_CHANNEL_TXT_MSG: plain text, channel 0, timestamp zero, empty body.
+    first_send = Bytes[3_u8, 0_u8, 0_u8, 0_u8, 0_u8, 0_u8, 0_u8]
+    second_send = first_send.dup
+    second_send[2] = 1_u8 # Synthetic channel 1 distinguishes client 2's send.
+    h.client(1, first_send)
+    h.upstream.shift.should eq(scope)
+    h.client(2, second_send)
+
+    h.response(Bytes[0_u8]) # Hidden scope-setup OK.
+    h.upstream.shift.should eq(first_send)
+    # ERR(ILLEGAL_ARG): client 1's radio send failed, so this exact error is
+    # visible, but the mux must still restore physical idle scope.
+    h.response(Bytes[1_u8, 6_u8])
+    h.replies[1_i64].should eq([Bytes[1_u8, 6_u8]])
+    h.upstream.shift.should eq(Bytes[54_u8, 0_u8]) # Restore configured default.
+    h.response(Bytes[0_u8])                        # Hidden restoration OK.
+
+    # Client 2 retained its default virtual scope. Only after restoration may
+    # its queued original command be forwarded, exactly once and unchanged.
+    h.upstream.shift.should eq(second_send)
+    h.response(Bytes[0_u8]) # Native channel-send acceptance.
+    h.replies[2_i64].should eq([Bytes[0_u8]])
+    h.upstream.should be_empty
+    h.broker.failed.should be_false
+  end
+
   it "retains remote ownership after SENT without blocking local queries or accepting tentative pushes" do
     h = StatefulHarness.new
     # SEND_STATUS_REQ (27): opcode plus 32-byte synthetic peer key; matching uses its first six
@@ -353,7 +500,11 @@ describe "broker stateful operations" do
     # SEND_CONFIRMED (0x82): four-byte ACK token, then round-trip milliseconds (u32 LE); real
     # delivery confirmation.
     h.response(Bytes[0x82, 4, 0xbb, 0xcc, 0xdd, 1, 0, 0, 0])
-    h.client(2, stateful_dm)
+    retry = stateful_dm.dup
+    # The client increments the SEND_TXT_MSG attempt byte while retaining its
+    # timestamp and body. A retry still cannot overwrite the next physical slot.
+    retry[2] = 3_u8
+    h.client(2, retry)
     h.upstream.should be_empty
     # ERR (0x01), BAD_STATE.
     h.replies[2_i64].last.should eq(Bytes[1, 4])
@@ -361,8 +512,8 @@ describe "broker stateful operations" do
     # SEND_CONFIRMED (0x82): four-byte ACK token, then round-trip milliseconds (u32 LE); real
     # delivery confirmation.
     h.response(Bytes[0x82, 1, 0xbb, 0xcc, 0xdd, 1, 0, 0, 0])
-    h.client(2, stateful_dm)
-    h.upstream.shift.should eq(stateful_dm)
+    h.client(2, retry)
+    h.upstream.shift.should eq(retry)
   end
 
   it "protects signing chunks and classifies a departed owner's in-flight reply" do
