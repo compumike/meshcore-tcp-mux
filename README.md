@@ -28,23 +28,76 @@ TLDR: this one works.
 
 -----
 
-## Docker Compose
+## Run it with Docker Compose
 
-The included `compose.yaml` uses the published
-`compumike/meshcore-tcp-mux:latest` image with non-root/read-only security
-settings. Set `MESHCORE_UPSTREAM_HOST` in your shell or a local `.env` file,
-then run:
+The easiest way to run `meshcore-tcp-mux` is by spinning up a tiny Docker Compose container, published for amd64 and arm64:
 
-```sh
-docker compose up -d
-docker compose logs -f
-docker compose down
+1. Create a directory.
+
+2. Paste this into `compose.yaml`:
+
+```
+services:
+  meshcore-tcp-mux:
+    image: compumike/meshcore-tcp-mux:latest
+    restart: unless-stopped
+    command:
+      - "--upstream-host"
+      - "192.168.123.456"
+      - "--upstream-port"
+      - "5000"
+      - "--listen-host"
+      - "0.0.0.0"
+      - "--listen-port"
+      - "5001"
+    ports:
+      - "127.0.0.1:5001:5001/tcp"
+    read_only: true
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
 ```
 
-Optional variables are `MESHCORE_UPSTREAM_PORT` (5000), `MESHCORE_BIND_HOST`
-(127.0.0.1), and `MESHCORE_LISTEN_PORT` (5001, host-side). Keep local environment
-files uncommitted. Compose does not build or publish an image automatically.
-Run only one mux per physical companion, including during updates: stop a
-native/systemd instance before starting the container. Do not scale replicas
-or probe the physical upstream from a healthcheck, as competing connections
-can displace the mux. Restarting loses the in-memory client inboxes.
+Replace "192.168.123.456" with the IP of your upstream companion. (Be sure that `meshcore-cli -t 192.168.123.456 -p 5000` is already working before you try `meshcore-tcp-mux`.)
+
+Keep the "--listen-host" as "0.0.0.0" *within* the container.
+
+The "ports" line controls what gets bound and is accessible from *outside* the container. If you want it to be accessible to other computers / phones / etc, change "127.0.0.1" to "0.0.0.0" and apply firewalls / VPNs / etc at your own risk.
+
+3. Spin it up:
+
+```
+    docker compose up -d
+    docker compose logs --follow
+
+    # Later, to turn it off:
+    docker compose down
+```
+
+4. Connect to it:
+
+```
+    meshcore-cli -t 127.0.0.1 -p 5001
+```
+
+You should now be able to connect multiple clients to `127.0.0.1:5001` and have them all basically work simultaneously.
+
+-----
+
+## Limitations
+
+In general, `meshcore-tcp-mux` will work for multiple connected clients.
+
+There are some limitations due to the nature of the MeshCore protocol, which was designed for a single client connecting to a single companion node:
+
+-  If one client sends a DM or channel message, the other clients will NOT see its contents as an outgoing message, because the companion protocol provides no outgoing-message event. Incoming messages are copied to all currently connected clients. DM delivery confirmations are broadcast, but they do not contain the original message.
+  - This is the most visible and obvious limitation of the protocol. It can't be fixed without a firmware/protocol addition for an explicit outgoing-message event containing an ID, content, and delivery state.
+- Some operations may briefly block other clients for a few seconds because they require a two-way transaction between client and companion. These include listing contacts, querying or changing device settings, and waiting for a send acknowledgement. (The other clients are simply delayed/stalled for a few seconds, and will start working again once the transaction has completed.)
+  - This is generally fine, as it's only a brief delay, and only on certain operations.
+- All clients share the companion's identity and configuration. A change made by one client affects every client, but the others may not notice it until they reconnect.
+- Messages are consumed from the companion and not stored anywhere, so a new client that connects won't see earlier messages that any other previously-connected clients have received. (When no clients are connected, messages remain queued on the companion.)
+- While a remote repeater login is pending, another client cannot start status, remote telemetry, binary, path-discovery, anonymous, or trace requests. (Ordinary local queries, incoming message handling, and outbound DMs and channel message sends can continue.)
+- Only one login or other remote request can be pending at a time. Concurrent attempts are rejected with BAD_STATE. Repeater login/logout state is shared by all clients.
+- This `meshcore-tcp-mux` must be the companion node's only direct client. Connecting to the node through BLE, USB, or another TCP connection will absolutely cause problems.
+- The exposed TCP port has no authentication or encryption and should not be exposed directly to the Internet.
+
+If you're writing automations or bots, these are generally not significantly concerning limitations.
