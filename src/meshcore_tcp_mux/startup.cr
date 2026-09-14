@@ -1,3 +1,5 @@
+require "./protocol"
+
 class MeshCoreTCPMux
   # Namespace for the TCP multiplexer: transport, protocol validation, and per-client state.
   class Startup
@@ -10,7 +12,7 @@ class MeshCoreTCPMux
       # Startup could not establish a safe, synchronized companion connection.
     end
 
-    getter self_info : Bytes?
+    getter self_key : Bytes?
     getter device_info : Bytes?
     getter deadline : Time::Span
     @self_run = 0
@@ -22,16 +24,13 @@ class MeshCoreTCPMux
     end
 
     def self.app_start : Bytes
-      name = "meshcore-mux".to_slice
-      payload = Bytes.new(8 + name.size, 0)
-      payload[0] = 1 # APP_START; seven zero reserved bytes precede the app name at offset 8.
-      payload[8, name.size].copy_from(name)
-      payload
+      # Use the canonical APP_START layout, including its seven reserved bytes.
+      Protocol.app_start_payload("meshcore-mux")
     end
 
     def self.probes : Array(Bytes)
       # Five APP_START commands fence the four-frame stale queue; DEVICE_QUERY (0x16) requests native v13.
-      Array.new(5) { app_start } << Bytes[0x16, 13]
+      Array.new(5) { app_start } << Protocol.device_query_payload
     end
 
     def ready? : Bool
@@ -52,19 +51,21 @@ class MeshCoreTCPMux
         raise Error.new("startup scope reset rejected") unless payload == Bytes[0] # OK: temporary scope has been reset.
         @ready = true
       elsif payload[0] == 5 # 5 = SELF_INFO.
-        raise Error.new("short SELF_INFO") if payload.size < 58
+        @self_key = Protocol.validate_self_info!(payload)
         @self_run += 1
-        @self_info = payload.dup
       elsif payload[0] == 0x0d && @self_run >= 5 # 0x0d = DEVICE_INFO.
-        raise Error.new("invalid native_v13 DEVICE_INFO") unless payload.size == 82 && payload[1] == 13
+        Protocol.validate_device_info!(payload)
         @device_info = payload.dup
         @awaiting_scope = true
         return Bytes[0x36, 0] # SET_FLOOD_SCOPE_KEY: mode 0 without a key restores the default scope.
       else
         @self_run = 0
-        @self_info = nil
+        @self_key = nil
       end
       nil
+    rescue ex : Protocol::ProtocolError
+      # Preserve the startup error boundary for both the probe and daemon.
+      raise Error.new(ex.message || "invalid startup response")
     end
 
     def identification : String

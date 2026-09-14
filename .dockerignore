@@ -3,12 +3,16 @@
 **
 !Dockerfile
 !Makefile
+!LICENSE
 !src/
 !src/**
 !spec/
 !spec/**
 !scripts/
 !scripts/check_fake_clients.py
+!scripts/check_live_reconnect.py
+!scripts/check_clients.py
+!scripts/test_readiness.py
 
 # Editor backups remain excluded even inside the allowed source directories.
 **/*~

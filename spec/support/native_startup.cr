@@ -104,7 +104,7 @@ class SpecSupport
                  when 0x36 # SET_FLOOD_SCOPE_KEY.
                    # SET_FLOOD_SCOPE_KEY (54/0x36), mode 0 with no key: restore the configured
                    # default scope.
-                   # OK (0x00): command accepted, not proof of radio delivery.
+                   # OK (0x00): startup default-scope restoration completed.
                    # ERR (0x01), ILLEGAL_ARG.
                    command == Bytes[0x36_u8, 0_u8] ? Bytes[0_u8] : Bytes[1_u8, 6_u8]
                  else

@@ -34,8 +34,9 @@ Python environment):
 direnv exec . make ci PYTHON=/path/to/python
 ```
 
-The GitHub Actions workflow pins the compiler and client packages. The example
-systemd unit in `examples/` assumes the binary has been installed at
+The local `make ci` target checks formatting, builds, runs specs, and exercises
+the fake companion with the pinned client packages. The example systemd unit in
+`examples/` assumes the binary has been installed at
 `/usr/local/bin/meshcore-tcp-mux`. Create `/etc/meshcore-tcp-mux.env` with
 `MESHCORE_UPSTREAM_HOST=your-companion-hostname` before starting the service.
 
@@ -139,11 +140,56 @@ docker buildx imagetools inspect compumike/meshcore-tcp-mux:latest
 
 `docker-push` builds and tests **both** platforms before pushing the shared
 `latest` tag. `docker-build` never pushes. `DOCKER_IMAGE`, `DOCKER_PLATFORMS`, and
-`DOCKER_BUILDER` are overridable Make variables. No version tags are generated.
+`DOCKER_BUILDER` are overridable Make variables. Version tags are selected
+explicitly as described below.
 For builder setup, see [Docker's multi-platform guide](https://docs.docker.com/build/building/multi-platform/).
 Native ARM64 builders are preferable for frequent releases because emulated
 Crystal compilation can be slow. When updating Crystal, update `.tool-versions`
 and the Dockerfile's compiler tag/index digest together.
+
+### Versioned releases
+
+The current release version is **1.0.0**. `meshcore-tcp-mux --version` prints
+the version without connecting to a companion or requiring upstream arguments.
+When preparing a new release, update `shard.yml` and
+`src/meshcore_tcp_mux/version.cr` together, run the local checks, and commit the
+reviewed release changes before creating the source tag.
+
+Tag and push the reviewed source commit to your configured Git remote:
+
+```sh
+git tag -a v1.0.0 -m 'meshcore-tcp-mux 1.0.0'
+git push origin HEAD
+git push origin v1.0.0
+```
+
+Build, test, and publish the matching multi-platform image with an explicit
+version tag. Authenticate to Docker Hub first and select a builder supporting
+both target architectures:
+
+```sh
+docker login
+direnv exec . make docker-push \
+  DOCKER_IMAGE=compumike/meshcore-tcp-mux:1.0.0 \
+  DOCKER_BUILDER=YOUR_MULTIARCH_BUILDER
+docker buildx imagetools inspect compumike/meshcore-tcp-mux:1.0.0
+```
+
+After verifying the versioned image, optionally point `latest` at the same
+multi-platform image without rebuilding it:
+
+```sh
+docker buildx imagetools create \
+  --tag compumike/meshcore-tcp-mux:latest \
+  compumike/meshcore-tcp-mux:1.0.0
+```
+
+Do not move an already published version tag to different source or image
+contents. Use a new version for corrections; deployments can pin the version
+tag or the inspected digest for reproducibility. These commands publish source
+and images only when explicitly run; normal builds do not publish anything.
+The runtime image includes the project's MIT license at
+`/usr/share/licenses/meshcore-tcp-mux/LICENSE`.
 
 ## Verification
 

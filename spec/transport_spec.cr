@@ -21,10 +21,6 @@ end
 
 class FaultingWriteSocket < TCPSocket
   # Simulates a socket that fails after a partial write, proving Transport never retries a frame prefix.
-  # Loopback-only transport tests: endpoints frame and own bytes but do not
-  # validate command semantics. Several short payloads are ordering sentinels,
-  # not valid MeshCore replies. The final runtime test adds a protocol-aware fake.
-  # Envelope lengths and protocol integer fields are little-endian.
 
   getter write_calls = 0
 
@@ -36,6 +32,9 @@ class FaultingWriteSocket < TCPSocket
 end
 
 describe MeshCoreTCPMux::Transport::Endpoint do
+  # Loopback endpoints frame and own bytes without validating command semantics.
+  # Short ordering sentinels need not be valid MeshCore replies. Envelope
+  # lengths and protocol integer fields are little-endian.
   client_marker = MeshCoreTCPMux::FrameCodec::CLIENT_TO_COMPANION_MARKER
   companion_marker = MeshCoreTCPMux::FrameCodec::COMPANION_TO_CLIENT_MARKER
 
@@ -199,6 +198,7 @@ describe MeshCoreTCPMux::Transport::Endpoint do
 end
 
 describe MeshCoreTCPMux::Runtime do
+  # Add a protocol-aware fake to verify the transport and startup fence together.
   it "synchronizes before admission and relays framed traffic through the broker" do
     companion_server = TCPServer.new("127.0.0.1", 0)
     config = MeshCoreTCPMux::Config.new
@@ -228,7 +228,7 @@ describe MeshCoreTCPMux::Runtime do
                          SpecSupport::NativeStartupTransport.device_info
                        when 0x36 # SET_FLOOD_SCOPE_KEY.
                          scope_written.send(nil)
-                         # OK (0x00): command accepted, not proof of radio delivery.
+                         # OK (0x00): startup default-scope restoration completed.
                          Bytes[0_u8]
                        when 10 # SYNC_NEXT_MESSAGE.
                          # NO_MORE_MESSAGES (0x0a): inbox empty.

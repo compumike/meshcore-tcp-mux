@@ -30,6 +30,8 @@ from check_clients import connect, query_read_only
 
 
 class RelayConnection:
+    """Own both sides of one relay generation and close them together."""
+
     def __init__(
         self,
         generation: int,
@@ -300,13 +302,18 @@ async def read_mux_stderr(
     ready: asyncio.Queue[int],
     tail: deque[str],
 ) -> None:
-    generation = 0
+    """Recognize the stable readiness event regardless of log field ordering."""
+
     while line := await stream.readline():
         text = line.decode(errors="replace").rstrip()
         tail.append(text)
-        if " ready profile=native_v13 " in text:
-            generation += 1
-            await ready.put(generation)
+        fields = dict(
+            token.split("=", 1) for token in text.split() if "=" in token
+        )
+        if fields.get("event") == "upstream.ready":
+            epoch = fields.get("epoch", "")
+            if epoch.isdecimal() and int(epoch) > 0:
+                await ready.put(int(epoch))
 
 
 async def expect_generation(
@@ -385,6 +392,9 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
             str(args.response_timeout),
             stdout=asyncio.subprocess.DEVNULL,
             stderr=asyncio.subprocess.PIPE,
+            # Readiness is an INFO event; do not inherit a level that hides it
+            # or DEBUG payloads that could enter this live check's error report.
+            env={**os.environ, "LOG_LEVEL": "INFO"},
         )
         if process.stderr is None:
             raise AssertionError("mux stderr pipe was not created")

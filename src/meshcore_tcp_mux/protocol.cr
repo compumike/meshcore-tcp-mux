@@ -106,13 +106,20 @@ class MeshCoreTCPMux
     end
 
     private def self.command_peer(payload : Bytes) : Bytes?
+      # Public destination keys exclude the TCP envelope: ordinary peer commands
+      # put their key at byte 1, telemetry after three option bytes at byte 4,
+      # and path discovery after its reserved byte at byte 2. Truncated commands
+      # can be logged before validation; require at least the six-byte prefix.
       return nil if payload.empty?
       offset = case payload[0]
                when 13, 15, 16, 26, 27, 28, 29, 30, 50, 57
+                 # RESET_PATH, REMOVE_CONTACT, SHARE_CONTACT, SEND_LOGIN,
+                 # SEND_STATUS_REQ, HAS_CONNECTION, LOGOUT, GET_CONTACT_BY_KEY,
+                 # SEND_BINARY_REQ, SEND_ANON_REQ.
                  1
-               when 39
+               when 39 # SEND_TELEMETRY_REQ: the four-byte self form has no peer.
                  payload.size >= 36 ? 4 : nil
-               when 52
+               when 52 # SEND_PATH_DISCOVERY_REQ.
                  2
                end
       return nil unless offset && payload.size >= offset + 6
@@ -126,7 +133,7 @@ class MeshCoreTCPMux
         [1..(payload.size - 1)]
       when 26 # SEND_LOGIN: public destination key followed by the login password.
         payload.size > 33 ? [33..(payload.size - 1)] : [] of Range(Int32, Int32)
-      when 32 # SET_CHANNEL: opcode, index, public name, then 16–31 secret bytes.
+      when 32 # SET_CHANNEL: opcode, index, public name, 16-byte key, then optional trailing bytes.
         payload.size > 34 ? [34..(payload.size - 1)] : [] of Range(Int32, Int32)
       when 34 # SIGN_DATA can contain arbitrary application-secret input.
         payload.size > 1 ? [1..(payload.size - 1)] : [] of Range(Int32, Int32)
@@ -179,6 +186,8 @@ class MeshCoreTCPMux
 
     enum Grammar
       # The response stream shape used to decide when upstream ownership can be released.
+      # Contacts is the multi-frame grammar. Inbox, SelfTelemetry, and Disconnecting
+      # additionally document special broker paths; their labels alone do not route replies.
       Single
       Contacts
       Inbox
@@ -188,17 +197,13 @@ class MeshCoreTCPMux
 
     @[Flags]
     enum CommandFlags : UInt16
-      # Broker policy bits: scope wrapping, shared resources, local virtualization, and reply correlation.
+      # Active broker policy bits: scope wrapping, shared resources, and reply correlation.
       # Maintenance marks disruptive lifecycle handling; reboot is exempt from permission gating.
       None          =   0
       ScopeSend     =   1
-      PlainDM       =   2
       RemoteLease   =   4
       Signing       =   8
-      Virtual       =  16
-      SharedState   =  32
       Maintenance   =  64
-      PrivateKey    = 128
       VerifyIndex   = 256
       VerifySubtype = 512
     end
@@ -237,7 +242,7 @@ class MeshCoreTCPMux
       # Replies: SELF_INFO
       1_u8 => d(1, :app_start, Grammar::Single, [0x05]),
       # Replies: SENT
-      2_u8 => d(2, :send_txt_msg, Grammar::Single, [0x06], CommandFlags::ScopeSend | CommandFlags::PlainDM),
+      2_u8 => d(2, :send_txt_msg, Grammar::Single, [0x06], CommandFlags::ScopeSend),
       # Replies: OK
       3_u8 => d(3, :send_channel_txt_msg, Grammar::Single, [0x00], CommandFlags::ScopeSend),
       # Replies: CONTACTS_START, CONTACT, END_OF_CONTACTS
@@ -245,43 +250,43 @@ class MeshCoreTCPMux
       # Replies: CURRENT_TIME
       5_u8 => d(5, :get_device_time, Grammar::Single, [0x09]),
       # Replies: OK
-      6_u8 => d(6, :set_device_time, Grammar::Single, [0x00], CommandFlags::SharedState),
+      6_u8 => d(6, :set_device_time, Grammar::Single, [0x00]),
       # Replies: OK
       7_u8 => d(7, :send_self_advert, Grammar::Single, [0x00]),
       # Replies: OK
-      8_u8 => d(8, :set_advert_name, Grammar::Single, [0x00], CommandFlags::SharedState),
+      8_u8 => d(8, :set_advert_name, Grammar::Single, [0x00]),
       # Replies: OK
-      9_u8 => d(9, :add_update_contact, Grammar::Single, [0x00], CommandFlags::SharedState),
+      9_u8 => d(9, :add_update_contact, Grammar::Single, [0x00]),
       # Replies: CONTACT_MESSAGE, CHANNEL_MESSAGE, NO_MORE_MESSAGES, CONTACT_MESSAGE_V3, CHANNEL_MESSAGE_V3, CHANNEL_DATA
-      10_u8 => d(10, :sync_next_message, Grammar::Inbox, [0x07, 0x08, 0x0a, 0x10, 0x11, 0x1b], CommandFlags::Virtual),
+      10_u8 => d(10, :sync_next_message, Grammar::Inbox, [0x07, 0x08, 0x0a, 0x10, 0x11, 0x1b]),
       # Replies: OK
-      11_u8 => d(11, :set_radio_params, Grammar::Single, [0x00], CommandFlags::SharedState),
+      11_u8 => d(11, :set_radio_params, Grammar::Single, [0x00]),
       # Replies: OK
-      12_u8 => d(12, :set_radio_tx_power, Grammar::Single, [0x00], CommandFlags::SharedState),
+      12_u8 => d(12, :set_radio_tx_power, Grammar::Single, [0x00]),
       # Replies: OK
-      13_u8 => d(13, :reset_path, Grammar::Single, [0x00], CommandFlags::SharedState),
+      13_u8 => d(13, :reset_path, Grammar::Single, [0x00]),
       # Replies: OK
-      14_u8 => d(14, :set_advert_latlon, Grammar::Single, [0x00], CommandFlags::SharedState),
+      14_u8 => d(14, :set_advert_latlon, Grammar::Single, [0x00]),
       # Replies: OK
-      15_u8 => d(15, :remove_contact, Grammar::Single, [0x00], CommandFlags::SharedState),
+      15_u8 => d(15, :remove_contact, Grammar::Single, [0x00]),
       # Replies: OK
       16_u8 => d(16, :share_contact, Grammar::Single, [0x00]),
       # Replies: EXPORT_CONTACT
       17_u8 => d(17, :export_contact, Grammar::Single, [0x0b]),
       # Replies: OK
-      18_u8 => d(18, :import_contact, Grammar::Single, [0x00], CommandFlags::SharedState),
+      18_u8 => d(18, :import_contact, Grammar::Single, [0x00]),
       # Replies: No ordinary reply; the companion disconnects.
       19_u8 => d(19, :reboot, Grammar::Disconnecting, Array(UInt8).new, CommandFlags::Maintenance),
       # Replies: BATTERY_AND_STORAGE
       20_u8 => d(20, :get_batt_and_storage, Grammar::Single, [0x0c]),
       # Replies: OK
-      21_u8 => d(21, :set_tuning_params, Grammar::Single, [0x00], CommandFlags::SharedState),
+      21_u8 => d(21, :set_tuning_params, Grammar::Single, [0x00]),
       # Replies: DEVICE_INFO
       22_u8 => d(22, :device_query, Grammar::Single, [0x0d]),
       # Replies: PRIVATE_KEY, DISABLED
-      23_u8 => d(23, :export_private_key, Grammar::Single, [0x0e, 0x0f], CommandFlags::PrivateKey),
+      23_u8 => d(23, :export_private_key, Grammar::Single, [0x0e, 0x0f]),
       # Replies: OK, DISABLED
-      24_u8 => d(24, :import_private_key, Grammar::Single, [0x00, 0x0f], CommandFlags::Maintenance | CommandFlags::PrivateKey),
+      24_u8 => d(24, :import_private_key, Grammar::Single, [0x00, 0x0f], CommandFlags::Maintenance),
       # Replies: OK
       25_u8 => d(25, :send_raw_data, Grammar::Single, [0x00]),
       # Replies: SENT
@@ -289,15 +294,15 @@ class MeshCoreTCPMux
       # Replies: SENT
       27_u8 => d(27, :send_status_req, Grammar::Single, [0x06], CommandFlags::RemoteLease | CommandFlags::ScopeSend),
       # Replies: OK
-      28_u8 => d(28, :has_connection, Grammar::Single, [0x00], CommandFlags::SharedState),
+      28_u8 => d(28, :has_connection, Grammar::Single, [0x00]),
       # Replies: OK
-      29_u8 => d(29, :logout, Grammar::Single, [0x00], CommandFlags::SharedState),
+      29_u8 => d(29, :logout, Grammar::Single, [0x00]),
       # Replies: CONTACT
       30_u8 => d(30, :get_contact_by_key, Grammar::Single, [0x03]),
       # Replies: CHANNEL_INFO
       31_u8 => d(31, :get_channel, Grammar::Single, [0x12], CommandFlags::VerifyIndex),
       # Replies: OK
-      32_u8 => d(32, :set_channel, Grammar::Single, [0x00], CommandFlags::SharedState),
+      32_u8 => d(32, :set_channel, Grammar::Single, [0x00]),
       # Replies: SIGN_START
       33_u8 => d(33, :sign_start, Grammar::Single, [0x13], CommandFlags::Signing),
       # Replies: OK
@@ -307,15 +312,15 @@ class MeshCoreTCPMux
       # Replies: SENT
       36_u8 => d(36, :send_trace_path, Grammar::Single, [0x06], CommandFlags::RemoteLease),
       # Replies: OK
-      37_u8 => d(37, :set_device_pin, Grammar::Single, [0x00], CommandFlags::SharedState),
+      37_u8 => d(37, :set_device_pin, Grammar::Single, [0x00]),
       # Replies: OK
-      38_u8 => d(38, :set_other_params, Grammar::Single, [0x00], CommandFlags::SharedState),
+      38_u8 => d(38, :set_other_params, Grammar::Single, [0x00]),
       # Replies: TELEMETRY_RESPONSE
       39_u8 => d(39, :send_telemetry_req, Grammar::SelfTelemetry, [0x8b]),
       # Replies: CUSTOM_VARS
       40_u8 => d(40, :get_custom_vars, Grammar::Single, [0x15]),
       # Replies: OK
-      41_u8 => d(41, :set_custom_var, Grammar::Single, [0x00], CommandFlags::SharedState),
+      41_u8 => d(41, :set_custom_var, Grammar::Single, [0x00]),
       # Replies: ADVERT_PATH
       42_u8 => d(42, :get_advert_path, Grammar::Single, [0x16]),
       # Replies: TUNING_PARAMS
@@ -327,7 +332,7 @@ class MeshCoreTCPMux
       # Replies: SENT
       52_u8 => d(52, :send_path_discovery_req, Grammar::Single, [0x06], CommandFlags::RemoteLease | CommandFlags::ScopeSend),
       # Replies: OK
-      54_u8 => d(54, :set_flood_scope_key, Grammar::Single, [0x00], CommandFlags::Virtual),
+      54_u8 => d(54, :set_flood_scope_key, Grammar::Single, [0x00]),
       # Replies: OK
       55_u8 => d(55, :send_control_data, Grammar::Single, [0x00]),
       # Replies: STATS
@@ -335,17 +340,17 @@ class MeshCoreTCPMux
       # Replies: SENT
       57_u8 => d(57, :send_anon_req, Grammar::Single, [0x06], CommandFlags::RemoteLease | CommandFlags::ScopeSend),
       # Replies: OK
-      58_u8 => d(58, :set_autoadd_config, Grammar::Single, [0x00], CommandFlags::SharedState),
+      58_u8 => d(58, :set_autoadd_config, Grammar::Single, [0x00]),
       # Replies: AUTOADD_CONFIG
       59_u8 => d(59, :get_autoadd_config, Grammar::Single, [0x19]),
       # Replies: ALLOWED_REPEAT_FREQ
       60_u8 => d(60, :get_allowed_repeat_freq, Grammar::Single, [0x1a]),
       # Replies: OK
-      61_u8 => d(61, :set_path_hash_mode, Grammar::Single, [0x00], CommandFlags::SharedState),
+      61_u8 => d(61, :set_path_hash_mode, Grammar::Single, [0x00]),
       # Replies: OK
       62_u8 => d(62, :send_channel_data, Grammar::Single, [0x00], CommandFlags::ScopeSend),
       # Replies: OK
-      63_u8 => d(63, :set_default_flood_scope, Grammar::Single, [0x00], CommandFlags::SharedState),
+      63_u8 => d(63, :set_default_flood_scope, Grammar::Single, [0x00]),
       # Replies: DEFAULT_FLOOD_SCOPE
       64_u8 => d(64, :get_default_flood_scope, Grammar::Single, [0x1c]),
       # Replies: OK
@@ -425,13 +430,16 @@ class MeshCoreTCPMux
         n >= 65
       when 25 # SEND_RAW_DATA: signed path length, path bytes, and at least four data bytes.
         return false if n < 6
-        path_len = p[1].to_i8.to_i
-        path_len >= 0 && 2 + path_len + 4 <= n
+        # High-bit values represent unsupported negative paths. Reject before
+        # narrowing: UInt8#to_i8 would throw and end every client's epoch.
+        return false if p[1] >= 0x80
+        path_len = p[1].to_i
+        2 + path_len + 4 <= n
       when 26 # SEND_LOGIN: 32-byte peer key, followed by optional credentials.
         n >= 33
       when 31 # GET_CHANNEL: one channel index.
         n >= 2
-      when 32 # SET_CHANNEL: channel index, 32-byte name, and 16–31 secret bytes.
+      when 32 # SET_CHANNEL: channel index, 32-byte name, 16-byte key, and up to 15 ignored trailing bytes.
         n >= 50 && n < 66
       when 34 # SIGN_DATA: at least one signing-data byte.
         n >= 2
@@ -693,6 +701,12 @@ class MeshCoreTCPMux
       else
         payload.dup
       end
+    end
+
+    def self.plain_dm?(payload : Bytes) : Bool
+      # SEND_TXT_MSG (2) type 0 uses the companion's acknowledgement ring;
+      # other text types do not reserve a plain-message acknowledgement slot.
+      payload[0]? == 2 && payload[1]? == 0
     end
 
     def self.app_start_payload(app_name : String, reserved : Bytes = Bytes.new(7, 0_u8)) : Bytes

@@ -202,7 +202,7 @@ describe MeshCoreTCPMux::SigningLease do
     # SIGN_DATA (34/0x22), followed by 3 literal data byte(s); only accepted data counts against
     # the signing budget.
     lease.begin_data(1_i64, Bytes[0x22, 1, 2, 3], 0.seconds).should eq(MeshCoreTCPMux::SigningLease::Admission::Allowed)
-    # OK (0x00): command accepted, not proof of radio delivery.
+    # OK (0x00): signing data appended to the operation.
     lease.data_response(Bytes[0], 1.second)
     lease.accepted_bytes.should eq(3)
     # SIGN_DATA (34/0x22), followed by 3 literal data byte(s); only accepted data counts against
@@ -217,7 +217,7 @@ describe MeshCoreTCPMux::SigningLease do
     # SIGN_DATA (34/0x22), followed by 2 literal data byte(s); only accepted data counts against
     # the signing budget.
     lease.begin_data(1_i64, Bytes[0x22, 1, 2], 0.seconds)
-    # OK (0x00): command accepted, not proof of radio delivery.
+    # OK (0x00): signing data appended before the explicit restart.
     lease.data_response(Bytes[0], 0.seconds)
     lease.start(2_i64, start, 0.seconds).should be_false
     lease.start(1_i64, start, 0.seconds).should be_true

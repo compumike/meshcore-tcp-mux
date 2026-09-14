@@ -105,6 +105,18 @@ private def orphan_message : Bytes
   Bytes.new(13, 0_u8).tap { |payload| payload[0] = 7_u8 }
 end
 
+private class ListenerFaultRuntime < MeshCoreTCPMux::Runtime
+  # Supplies a real loopback listener whose lifetime the spec controls. Closing
+  # it without Runtime#stop injects accept failure without exhausting descriptors.
+  def initialize(@listener : TCPServer, port : Int32, config : MeshCoreTCPMux::Config) : Nil
+    super("127.0.0.1", port, config)
+  end
+
+  protected def create_listener : TCPServer
+    @listener
+  end
+end
+
 describe MeshCoreTCPMux::Runtime, "fault and epoch boundaries" do
   # End-to-end fault tests use only loopback sockets and a scripted companion.
   # Each upstream connection is an epoch; uncertainty closes its downstream clients
@@ -141,34 +153,102 @@ describe MeshCoreTCPMux::Runtime, "fault and epoch boundaries" do
     companion.try &.stop
   end
 
-  it "never replays a transmit command after the upstream drops immediately after its write" do
+  [:timeout, :disconnect].each do |fault|
+    it "never replays a transmit command after upstream #{fault} following its write" do
+      companion = SpecSupport::RuntimeCompanion.new
+      runtime, config, runtime_done = start_fault_runtime(companion)
+      await_epoch_ready(companion, 1)
+      sender = admit_client(companion, config, 1)
+
+      # SEND_TXT_MSG (2): plain type 0, attempt 3, timestamp 0x12345678
+      # (u32 little-endian), synthetic six-byte destination 01..06, and body
+      # "x". The fake observes the complete command, then either omits SENT
+      # while keeping TCP open or closes immediately. Both make execution unknown.
+      dm = Bytes[2_u8, 0_u8, 3_u8, 0x78_u8, 0x56_u8, 0x34_u8, 0x12_u8,
+        1_u8, 2_u8, 3_u8, 4_u8, 5_u8, 6_u8, 'x'.ord.to_u8]
+      send_command(sender, dm)
+      written = next_command(companion, 2_u8, 1)
+      written.payload.should eq(dm)
+      if fault == :disconnect
+        companion.disconnect
+      else
+        companion.drop
+      end
+      expect_closed(sender)
+
+      await_epoch_ready(companion, 2)
+      select
+      when command = companion.commands.receive
+        fail "uncertain transmit replayed in epoch 2: #{command.payload[0]}"
+      when timeout(200.milliseconds)
+      end
+    ensure
+      sender.try &.close
+      runtime.try &.stop
+      runtime_done.try &.receive
+      companion.try &.stop
+    end
+  end
+
+  it "rejects a negative raw path locally and keeps both clients in the same epoch" do
     companion = SpecSupport::RuntimeCompanion.new
     runtime, config, runtime_done = start_fault_runtime(companion)
     await_epoch_ready(companion, 1)
-    sender = admit_client(companion, config, 1)
+    healthy = admit_client(companion, config, 1)
+    malformed = admit_client(companion, config, 1)
 
-    # SEND_TXT_MSG (2): plain type 0, attempt 3, timestamp 0x12345678
-    # (u32 little-endian), synthetic six-byte destination 01..06, and body
-    # "x". The fake companion observes the complete command, then closes
-    # before SENT, modeling the point where execution is unknowable.
-    dm = Bytes[2_u8, 0_u8, 3_u8, 0x78_u8, 0x56_u8, 0x34_u8, 0x12_u8,
-      1_u8, 2_u8, 3_u8, 4_u8, 5_u8, 6_u8, 'x'.ord.to_u8]
-    send_command(sender, dm)
-    written = next_command(companion, 2_u8, 1)
-    written.payload.should eq(dm)
-    companion.drop
-    expect_closed(sender)
-
-    await_epoch_ready(companion, 2)
-    select
-    when command = companion.commands.receive
-      fail "uncertain transmit replayed in epoch 2: #{command.payload[0]}"
-    when timeout(200.milliseconds)
+    # SEND_RAW_DATA (25): -1 encoded as 0xff in its signed path field, then
+    # four synthetic bytes. The envelope is valid; the command shape is not.
+    send_command(malformed, Bytes[25_u8, 0xff_u8, 0_u8, 0_u8, 0_u8, 0_u8])
+    # ERR (1), ILLEGAL_ARG (6): rejection belongs only to the malformed sender.
+    read_payload(malformed, 1_u8).should eq(Bytes[1_u8, 6_u8])
+    [healthy, malformed].each do |client|
+      send_command(client, Bytes[5_u8]) # GET_DEVICE_TIME: verify continued progress.
+      # The next physical command is the query in epoch 1, never SEND_RAW_DATA.
+      next_command(companion, 5_u8, 1)
+      # CURRENT_TIME (9), synthetic timestamp 1 (u32 LE).
+      reply = Bytes[9_u8, 1_u8, 0_u8, 0_u8, 0_u8]
+      companion.reply(reply)
+      read_payload(client, 9_u8).should eq(reply)
     end
   ensure
-    sender.try &.close
+    healthy.try &.close
+    malformed.try &.close
     runtime.try &.stop
     runtime_done.try &.receive
+    companion.try &.stop
+  end
+
+  it "propagates acceptor failure after closing clients and joining the runtime" do
+    companion = SpecSupport::RuntimeCompanion.new
+    config = fault_config
+    listener = TCPServer.new("127.0.0.1", 0)
+    config.listen_port = listener.local_address.port
+    runtime = ListenerFaultRuntime.new(listener, companion.port, config)
+    outcome = Channel(Exception?).new(1)
+    spawn do
+      begin
+        runtime.run
+        outcome.send(nil)
+      rescue ex
+        outcome.send(ex)
+      end
+    end
+    await_epoch_ready(companion, 1)
+    client = admit_client(companion, config, 1)
+    listener.close # Unexpected accept failure, not a normal stop request.
+    select
+    when error = outcome.receive
+      # BinaryEntrypoint translates this propagated exception to exit status 1.
+      error.should be_a(IO::Error)
+    when timeout(2.seconds)
+      fail "runtime did not exit after acceptor failure"
+    end
+    expect_closed(client)
+  ensure
+    client.try &.close
+    listener.try &.close
+    runtime.try &.stop
     companion.try &.stop
   end
 

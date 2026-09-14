@@ -65,16 +65,16 @@ describe "broker event-order regressions" do
     setup.payload.should eq(Bytes[54_u8, 1_u8])
     broker.written(0_i64, setup.epoch, setup.write_id, Time::Span.zero)
 
-    # OK (0x00): command accepted, not proof of radio delivery.
+    # OK (0x00): hidden scope setup completed.
     broker.upstream_frame(Bytes[0_u8], 4.seconds)
     command = review_sends(broker.take_actions, 0_i64).first
     command.payload.should eq(channel_send)
     broker.written(0_i64, command.epoch, command.write_id, 4.seconds)
 
-    # OK (0x00): command accepted, not proof of radio delivery.
+    # OK (0x00): channel send accepted; radio delivery is not confirmed.
     broker.upstream_frame(Bytes[0_u8], 8.seconds)
     actions = broker.take_actions
-    # OK (0x00): command accepted, not proof of radio delivery.
+    # OK (0x00): only the channel acceptance is visible downstream.
     review_sends(actions, 1_i64).map(&.payload).should eq([Bytes[0_u8]])
     restore = review_sends(actions, 0_i64).first
     # SET_FLOOD_SCOPE_KEY (54/0x36), mode 0 with no key: restore the configured default scope.
@@ -82,7 +82,7 @@ describe "broker event-order regressions" do
     broker.failed.should be_false
     broker.written(0_i64, restore.epoch, restore.write_id, 8.seconds)
 
-    # OK (0x00): command accepted, not proof of radio delivery.
+    # OK (0x00): hidden default-scope restoration completed.
     broker.upstream_frame(Bytes[0_u8], 12.seconds)
     broker.failed.should be_false
     broker.active.should be_nil
@@ -98,7 +98,7 @@ describe "broker event-order regressions" do
     upstream = review_sends(broker.take_actions, 0_i64).first
     broker.written(0_i64, upstream.epoch, upstream.write_id, Time::Span.zero)
 
-    # OK (0x00): command accepted, not proof of radio delivery.
+    # OK (0x00): factory reset accepted; await downstream write completion.
     broker.upstream_frame(Bytes[0_u8], 1.millisecond)
     actions = broker.take_actions
     result = review_sends(actions, 1_i64).first
@@ -120,7 +120,7 @@ describe "broker event-order regressions" do
     broker.client_frame(1_i64, reset, Time::Span.zero)
     upstream = review_sends(broker.take_actions, 0_i64).first
     broker.written(0_i64, upstream.epoch, upstream.write_id, Time::Span.zero)
-    # OK (0x00): command accepted, not proof of radio delivery.
+    # OK (0x00): factory reset accepted; result is still queued downstream.
     broker.upstream_frame(Bytes[0_u8], 1.millisecond)
     broker.take_actions # The result has been handed to the downstream writer.
 

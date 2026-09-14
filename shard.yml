@@ -1,19 +1,4 @@
 name: meshcore-tcp-mux
-version: 0.1.0
-
-# authors:
-#   - name <email@example.com>
-
-# description: |
-#   Short description of meshcore-tcp-mux
-
-# dependencies:
-#   pg:
-#     github: will/crystal-pg
-#     version: "~> 0.5"
-
-# development_dependencies:
-#   webmock:
-#     github: manastech/webmock.cr
-
-# license: MIT
+version: 1.0.0
+description: Protocol-aware TCP multiplexer for a shared MeshCore companion.
+license: MIT

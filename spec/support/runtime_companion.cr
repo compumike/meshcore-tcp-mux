@@ -7,7 +7,8 @@ class SpecSupport
   class RuntimeCompanion
     # Scripted loopback companion: startup is automatic, then each command waits
     # for a test directive. Drop omits a reply but keeps the socket open; RawAndClose
-    # writes exactly the supplied wire bytes before disconnecting. Identity bytes
+    # writes exactly the supplied wire bytes before disconnecting. Disconnect
+    # closes immediately without a reply. Identity bytes
     # select synthetic public keys across reconnects, not real radio identities.
 
     record Command, epoch : Int32, payload : Bytes
@@ -17,7 +18,12 @@ class SpecSupport
     struct Drop
     end
 
-    alias Directive = Reply | RawAndClose | Drop
+    class Disconnect
+      # Ends TCP after receiving a command but before any response, separating
+      # an immediate EOF from the missing-reply timeout modeled by Drop.
+    end
+
+    alias Directive = Reply | RawAndClose | Drop | Disconnect
 
     getter port : Int32
     getter ready = Channel(Int32).new(8)
@@ -42,7 +48,13 @@ class SpecSupport
     end
 
     def drop : Nil
+      # Omit this command's reply while leaving TCP connected for timeout tests.
       @directives.send(Drop.new)
+    end
+
+    def disconnect : Nil
+      # Close the current connection when its received command is classified.
+      @directives.send(Disconnect.new)
     end
 
     def raw_and_close(bytes : Bytes) : Nil
@@ -99,7 +111,7 @@ class SpecSupport
             when 0x16 # DEVICE_QUERY.
               write(socket, NativeStartupTransport.device_info)
             when 0x36 # SET_FLOOD_SCOPE_KEY.
-              # OK (0x00): command accepted, not proof of radio delivery.
+              # OK (0x00): startup default scope is restored.
               write(socket, Bytes[0_u8])
               startup_complete = true
               @ready.send(epoch)
@@ -115,6 +127,8 @@ class SpecSupport
             write(socket, directive.payload)
           when RawAndClose
             socket.write(directive.bytes)
+            close_after_frame = true
+          when Disconnect
             close_after_frame = true
           when Drop
           end

@@ -298,7 +298,7 @@ describe MeshCoreTCPMux::Broker do
     one(sends(broker.take_actions, 1_i64)).payload[1].should eq(1_u8)
     current.write_id.should_not eq(old_write.write_id)
 
-    # OK (0x00): command accepted, not proof of radio delivery.
+    # OK (0x00): unexpected generic success with no active command owner.
     broker.upstream_frame(Bytes[0_u8], 4.milliseconds)
     actions = broker.take_actions
     actions.any?(MeshCoreTCPMux::EndEpoch).should be_true

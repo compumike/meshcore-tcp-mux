@@ -11,6 +11,15 @@ class MeshCoreTCPMux
     class Transaction
       # Tracks the sole in-flight upstream command, its response grammar, and its owner.
       # Also tracks hidden scope setup/restoration and write completion before releasing ownership.
+      enum Step
+        # Hidden scope replies and maintenance result delivery have different
+        # owners and completion rules from the client's ordinary command reply.
+        Command
+        Setup
+        Restore
+        MaintenanceResult
+      end
+
       getter owner : Int64
       getter command : Bytes
       getter descriptor : Protocol::CommandDescriptor
@@ -19,7 +28,7 @@ class MeshCoreTCPMux
       property contacts_started = false
       getter pop_sequence : Int64
       getter notification_generation : Int64
-      property step : Symbol = :command
+      property step = Step::Command
       property scoped = false
       property maintenance = false
       property upstream_write_id : Int64? = nil
@@ -120,7 +129,7 @@ class MeshCoreTCPMux
         @upstream_writes.delete(write_id)
       elsif session = @sessions[id]?
         session.writes.delete(write_id)
-        if (transaction = @active) && transaction.maintenance && transaction.step == :maintenance_result &&
+        if (transaction = @active) && transaction.maintenance && transaction.step.maintenance_result? &&
            transaction.owner == id && transaction.maintenance_write_id == write_id
           finish_transaction(transaction)
         end
@@ -218,7 +227,7 @@ class MeshCoreTCPMux
 
     private def check_active_deadline(now : Time::Span) : Bool
       if transaction = @active
-        return true if transaction.step == :maintenance_result
+        return true if transaction.step.maintenance_result?
         if now - transaction.progress >= @config.response_timeout ||
            (transaction.descriptor.grammar.contacts? && now - transaction.started >= @config.contacts_timeout)
           fail_epoch("uncertain response timeout opcode=#{transaction.command[0]} owner=#{transaction.owner}")
@@ -239,7 +248,7 @@ class MeshCoreTCPMux
       @order.delete(id)
       @actions << Diagnostic.new("epoch=#{@epoch} session=#{id} close reason=#{reason.inspect} inbox_items=#{session.inbox.size} queued_commands=#{session.commands.size}", category)
       @actions << CloseSession.new(id, reason)
-      if (transaction = @active) && transaction.maintenance && transaction.step == :maintenance_result && transaction.owner == id
+      if (transaction = @active) && transaction.maintenance && transaction.step.maintenance_result? && transaction.owner == id
         finish_transaction(transaction)
       end
     end
@@ -287,7 +296,7 @@ class MeshCoreTCPMux
           elsif command.payload[0] == 10                  # 10 = SYNC_NEXT_MESSAGE.
             session.commands.shift
             if session.inbox.empty?
-              session.sync = PendingSync.new(@pop_sequence + 1, now + 5.seconds)
+              session.sync = PendingSync.new(@pop_sequence + 1, now + @config.virtual_sync_timeout)
               request_drain
               break
             else
@@ -347,7 +356,7 @@ class MeshCoreTCPMux
       @actions << Diagnostic.new("event=command.dispatched_payload epoch=#{@epoch} session=#{owner} job=#{transaction.job_id} " \
                                  "#{Protocol.describe_command(command, include_payload: true)}", :debug)
       if (session = @sessions[owner]?) && descriptor.flags.includes?(Protocol::CommandFlags::ScopeSend) && session.scope != Bytes[0x36, 0]
-        transaction.step = :setup
+        transaction.step = Transaction::Step::Setup
         transaction.scoped = true
         transaction.upstream_write_id = send_upstream(session.scope, now)
       else
@@ -357,7 +366,7 @@ class MeshCoreTCPMux
 
     private def send_command(transaction : Transaction, now : Time::Span) : Nil
       # DEVICE_QUERY (22) is forwarded at our native target; the original client target stays in the transaction.
-      transaction.step = :command
+      transaction.step = Transaction::Step::Command
       command = transaction.command
       forwarded = command[0] == 22 ? Protocol.normalize_device_query(command) : command # 22 = DEVICE_QUERY.
       transaction.upstream_write_id = send_upstream(forwarded, now)
@@ -382,8 +391,8 @@ class MeshCoreTCPMux
         if @sessions.size != 1 || @remote.occupied?(now) || @dm_ring.pending_count(now) > 0 || @signing.occupied?(now)
           reason = 4_u8 # BAD_STATE: shared resource is unavailable.
         end
-      elsif command[0] == 2 && command[1] == 0 && !@dm_ring.available?(now) # SEND_TXT_MSG (2), plain text (type 0).
-        reason = 4_u8                                                       # BAD_STATE: shared resource is unavailable.
+      elsif Protocol.plain_dm?(command) && !@dm_ring.available?(now)
+        reason = 4_u8 # BAD_STATE: shared resource is unavailable.
       elsif descriptor.flags.includes?(Protocol::CommandFlags::RemoteLease)
         if @remote.reserve(owner, command, now)
           @actions << Diagnostic.new("event=remote_lease.reserved epoch=#{@epoch} session=#{owner} " \
@@ -414,7 +423,7 @@ class MeshCoreTCPMux
       end
       log_response(transaction, payload, now)
       transaction.progress = now
-      if transaction.step == :setup
+      if transaction.step.setup?
         if payload[0] == 1 # 1 = ERR.
           @remote.rejected if transaction.descriptor.flags.includes?(Protocol::CommandFlags::RemoteLease)
           emit(transaction.owner, payload)
@@ -432,7 +441,7 @@ class MeshCoreTCPMux
       # A SENT (6) reply accepts a radio operation but does not prove delivery. Retain its radio reservation;
       # signing commands instead update their incremental signing phase from the actual firmware reply.
       command = transaction.command
-      if command[0] == 2 && command[1] == 0 && payload[0] == 6 # SEND_TXT_MSG (2), plain text (type 0), accepted with SENT (6).
+      if Protocol.plain_dm?(command) && payload[0] == 6 # SENT accepts a plain DM into the acknowledgement ring.
         @dm_ring.accepted(payload, now)
       elsif transaction.descriptor.flags.includes?(Protocol::CommandFlags::RemoteLease)
         if payload[0] == 6 # SENT: the radio operation was accepted and now awaits its terminal push.
@@ -470,9 +479,16 @@ class MeshCoreTCPMux
         @upstream_writes.delete(write_id)
         transaction.upstream_write_id = nil
       end
-      if transaction.step != :command
+      case transaction.step
+      when Transaction::Step::Setup, Transaction::Step::Restore
         scope_response(transaction, payload, now)
         return
+      when Transaction::Step::MaintenanceResult
+        # The real maintenance result is already queued downstream. There is
+        # no outstanding upstream command to own another ordinary response.
+        raise Protocol::ProtocolError.new("ordinary response after maintenance result")
+      when Transaction::Step::Command
+        # Validate the client's reply grammar below, retaining stream ownership.
       end
       disposition = Protocol.validate_response!(transaction.descriptor, payload, transaction.command, phase: transaction.contacts_started ? 1 : 0)
       transaction.response_frames += 1
@@ -502,12 +518,12 @@ class MeshCoreTCPMux
       if disposition.complete?
         record_acceptance(transaction, payload, now)
         if transaction.scoped
-          transaction.step = :restore
+          transaction.step = Transaction::Step::Restore
           transaction.upstream_write_id = send_upstream(Bytes[0x36, 0], now) # SET_FLOOD_SCOPE_KEY: restore default scope.
         elsif transaction.maintenance && response_write_id
           # Closing the endpoint in the same action batch can discard this
           # real firmware result. End the epoch only after its writer confirms.
-          transaction.step = :maintenance_result
+          transaction.step = Transaction::Step::MaintenanceResult
           transaction.maintenance_write_id = response_write_id
         else
           finish_transaction(transaction)
@@ -521,7 +537,7 @@ class MeshCoreTCPMux
       queued = @sessions[transaction.owner]?.try(&.commands.size) || 0
       @actions << Diagnostic.new("event=command.response epoch=#{@epoch} session=#{transaction.owner} job=#{transaction.job_id} " \
                                  "command=#{transaction.descriptor.name} command_bytes=#{transaction.command.size} " \
-                                 "step=#{transaction.step} #{Protocol.describe_response(payload)} " \
+                                 "step=#{transaction.step.to_s.underscore} #{Protocol.describe_response(payload)} " \
                                  "response_frames=#{transaction.response_frames} queued_commands=#{queued} elapsed_ms=#{(now - transaction.started).total_milliseconds.round(3)}")
       @actions << Diagnostic.new("event=response.payload epoch=#{@epoch} session=#{transaction.owner} job=#{transaction.job_id} " \
                                  "#{Protocol.describe_response(payload, include_payload: true)}", :debug)

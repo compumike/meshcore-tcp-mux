@@ -34,7 +34,7 @@ describe MeshCoreTCPMux::Startup do
   end
 
   it "cannot accept any stale prefix of up to four ordinary marker classes" do
-    # OK (0x00): command accepted, not proof of radio delivery.
+    # OK (0x00): stale generic success, discarded before synchronization.
     # Opcode-only stale contacts marker; startup discards it before the synchronization
     # boundary.
     markers = [self_reply, device_reply, Bytes[0], Bytes[3], Bytes[4]]
@@ -57,7 +57,7 @@ describe MeshCoreTCPMux::Startup do
         # scope.
         startup.receive(device_reply, 0.seconds).should eq(Bytes[0x36, 0])
         startup.ready?.should be_false
-        # OK (0x00): command accepted, not proof of radio delivery.
+        # OK (0x00): startup default-scope restoration completed.
         startup.receive(Bytes[0], 0.seconds)
         startup.ready?.should be_true
       end
@@ -73,6 +73,19 @@ describe MeshCoreTCPMux::Startup do
     startup.receive(self_reply, 0.seconds)
     startup.receive(device_reply, 0.seconds).should be_nil
     expect_raises(MeshCoreTCPMux::Startup::Error, /timeout/) { startup.check_deadline(15.seconds) }
+  end
+
+  it "owns the validated public key and clears it when the fence is interrupted" do
+    startup = MeshCoreTCPMux::Startup.new(0.seconds)
+    reply = self_reply
+    # SELF_INFO public key is bytes 4..35; a repeated synthetic value makes
+    # ownership visible without exposing any real companion identity.
+    reply[4, 32].fill(0x55_u8)
+    startup.receive(reply, 0.seconds)
+    reply.fill(0_u8)
+    startup.self_key.should eq(Bytes.new(32, 0x55_u8))
+    startup.receive(Bytes[0_u8], 0.seconds) # Stale OK interrupts consecutive SELF_INFO.
+    startup.self_key.should be_nil
   end
 
   it "rejects unsupported profiles and a failed reset" do

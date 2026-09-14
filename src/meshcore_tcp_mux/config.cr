@@ -12,7 +12,10 @@ class MeshCoreTCPMux
     property listen_host = "127.0.0.1"
     property listen_port = 5001
     property command_limit = 16
-    property command_age = 3.seconds
+    property command_age = 15.seconds
+    # A virtual sync waits for a qualifying physical inbox pop behind other
+    # clients' transactions. Expiry rejects only this wait, without ending the epoch.
+    property virtual_sync_timeout = 15.seconds
     property inbox_entries = 256
     property output_frames = 512
     property frame_timeout = 5.seconds
@@ -26,11 +29,12 @@ class MeshCoreTCPMux
     property private_key_export = false
 
     def validate! : Nil
+      # Reject settings that cannot provide finite, positive resource deadlines.
       raise ArgumentError.new("listen port must be between 1 and 65535") unless (1..65535).includes?(@listen_port)
       unless {@command_limit, @inbox_entries, @output_frames}.all? { |n| n > 0 }
         raise ArgumentError.new("queue budgets must be positive")
       end
-      unless {@command_age, @frame_timeout, @write_timeout, @response_timeout, @contacts_timeout,
+      unless {@command_age, @virtual_sync_timeout, @frame_timeout, @write_timeout, @response_timeout, @contacts_timeout,
               @startup_timeout, @signing_timeout, @poll_interval}.all? { |duration| duration > Time::Span.zero }
         raise ArgumentError.new("deadlines and polling interval must be positive")
       end

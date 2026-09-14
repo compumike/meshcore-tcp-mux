@@ -23,6 +23,9 @@ def frame(payload: bytes) -> bytes:
 
 
 def self_info() -> bytes:
+    # SELF_INFO (5): radio type/power/max power at 1..3; synthetic public key
+    # at 4..35; signed LE coordinates at 36..43; options at 44..47; LE radio
+    # frequency/bandwidth at 48..55; SF/CR at 56..57, then the fake node name.
     key = bytes(range(32))
     fixed = (
         bytes([5, 1, 10, 22])
@@ -38,6 +41,9 @@ def self_info() -> bytes:
 
 
 def device_info() -> bytes:
+    # DEVICE_INFO (13): protocol 13, contact/channel capacities, synthetic PIN
+    # (u32 LE) at 4..7, then NUL-padded build/model/version fields at 8/20/60.
+    # Two final capability bytes make 82 payload bytes, excluding the envelope.
     def field(value: bytes, size: int) -> bytes:
         return value[: size - 1].ljust(size, b"\0")
 
@@ -54,6 +60,10 @@ def device_info() -> bytes:
 
 
 def contact_record(seed: int) -> bytes:
+    # CONTACT (3): synthetic key at 1..32, type/flags/path length at 33..35,
+    # fixed 64-byte path storage at 36..99 and 32-byte name at 100..131.
+    # LE advert time, signed latitude/longitude, and lastmod occupy 132..147.
+    # The seed distinguishes contacts; zero path length means no path hashes.
     name = f"fake-{seed}".encode().ljust(32, b"\0")
     payload = (
         bytes([3])

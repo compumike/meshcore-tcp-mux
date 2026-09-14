@@ -1,7 +1,9 @@
-"""Read-only live receive check using two independent meshcore_py sessions.
+"""Live receive check using two independent meshcore_py sessions.
 
 Run with the meshcore-cli virtual environment's Python. No messages are sent.
 Only hashes/counts of received payloads are printed, never message contents.
+Each sync consumes this session's inbox. When pointed directly at a companion,
+it consumes the physical inbox instead; this is not a non-consuming observer.
 """
 import argparse
 import asyncio

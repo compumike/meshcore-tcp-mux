@@ -2,6 +2,7 @@ require "option_parser"
 require "log"
 require "./upstream"
 require "./runtime"
+require "./version"
 
 class MeshCoreTCPMux
   # Namespace for the TCP multiplexer: transport, protocol validation, and per-client state.
@@ -28,6 +29,7 @@ class MeshCoreTCPMux
         options.on("--poll-interval SECONDS", "Inbox fallback polling interval (5)") { |v| config.poll_interval = v.to_f.seconds }
         options.on("--maintenance", "Enable private-key import and factory reset with one idle session") { config.maintenance = true }
         options.on("--allow-private-key-export", "Allow requester-only private key export") { config.private_key_export = true }
+        options.on("--version", "Show release version") { puts "meshcore-tcp-mux #{MeshCoreTCPMux::VERSION}"; exit }
         options.on("-h", "--help", "Show usage") { puts options; exit }
       end
 

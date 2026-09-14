@@ -72,7 +72,7 @@ private def matrix_phase(phase : Symbol) : {MeshCoreTCPMux::Broker, Time::Span}
     broker.client_frame(1_i64, matrix_channel, now)
     broker.take_actions
     now = 100.milliseconds
-    # OK (0x00): command accepted, not proof of radio delivery.
+    # OK (0x00): hidden scope setup completed.
     broker.upstream_frame(Bytes[0_u8], now)
   when :scope_restore
     # SET_FLOOD_SCOPE_KEY (54/0x36), mode 1: explicitly unscoped sends.
@@ -80,11 +80,11 @@ private def matrix_phase(phase : Symbol) : {MeshCoreTCPMux::Broker, Time::Span}
     broker.take_actions
     broker.client_frame(1_i64, matrix_channel, now)
     broker.take_actions
-    # OK (0x00): command accepted, not proof of radio delivery.
+    # OK (0x00): hidden scope setup completed.
     broker.upstream_frame(Bytes[0_u8], 100.milliseconds)
     broker.take_actions
     now = 200.milliseconds
-    # OK (0x00): command accepted, not proof of radio delivery.
+    # OK (0x00): channel send accepted; radio delivery is not confirmed.
     broker.upstream_frame(Bytes[0_u8], now)
   when :signing_data
     # SIGN_START (33/0x21): start the shared signing session.

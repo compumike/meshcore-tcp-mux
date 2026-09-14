@@ -87,7 +87,7 @@ describe SpecSupport::NativeStartupTransport do
     marker_classes = [
       self_info,
       device_info,
-      # OK (0x00): command accepted, not proof of radio delivery.
+      # OK (0x00): stale generic success retained from the previous client.
       Bytes[0_u8],
       # CONTACTS_START (0x02) with contact count 2 (u32 little-endian).
       Bytes[2_u8, 2_u8, 0_u8, 0_u8, 0_u8],

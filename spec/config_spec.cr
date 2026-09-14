@@ -1,10 +1,20 @@
 require "./spec_helper"
+require "../src/meshcore_tcp_mux/config"
 
 describe MeshCoreTCPMux::Config do
   # Config keeps internal safety policies injectable for deterministic specs,
   # while validation prevents invalid combinations from reaching the runtime.
   it "accepts the default policy" do
-    MeshCoreTCPMux::Config.new.validate!
+    config = MeshCoreTCPMux::Config.new
+    config.validate!
+    config.command_age.should eq(15.seconds)
+    config.virtual_sync_timeout.should eq(15.seconds)
+  end
+
+  it "rejects a nonpositive virtual sync deadline" do
+    config = MeshCoreTCPMux::Config.new
+    config.virtual_sync_timeout = Time::Span.zero
+    expect_raises(ArgumentError, /deadlines/) { config.validate! }
   end
 
   it "rejects nonpositive count limits" do

@@ -123,6 +123,7 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
             "60",
             stdout=asyncio.subprocess.DEVNULL,
             stderr=asyncio.subprocess.PIPE,
+            env={**os.environ, "LOG_LEVEL": "INFO"},  # Readiness event is required.
         )
         if process.stderr is None:
             raise AssertionError("mux stderr pipe was not created")

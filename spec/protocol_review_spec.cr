@@ -15,6 +15,20 @@ describe "native_v13 protocol validation regressions" do
   # but excludes TCP framing. Mutations below isolate the field being validated.
   # Normal paths use width-minus-one in high bits; trace paths use low-bit shifts.
 
+  it "rejects negative raw paths without throwing for any path-byte value" do
+    (0..255).each do |path|
+      # SEND_RAW_DATA (25): signed path byte at 1, path bytes at 2, and at
+      # least four data bytes. Lengths exclude the TCP envelope; 176 is the
+      # maximum. Zero-filled tails are synthetic, not actual radio packets.
+      [5, 6, 133, 176].each do |size|
+        payload = review_payload(25, size)
+        payload[1] = path.to_u8
+        expected = size >= 6 && path < 128 && 2 + path + 4 <= size
+        ReviewedProtocol.validate_command(payload).valid?.should eq(expected)
+      end
+    end
+  end
+
   it "validates the fixed advert/path keys and raw push metadata prefixes" do
     # ADVERT/PATH_UPDATED carry a 32-byte public key (33 including opcode).
     # RAW_DATA/CONTROL_DATA need four header bytes; LOG_RX_DATA needs three.

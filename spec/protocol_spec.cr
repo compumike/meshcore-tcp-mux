@@ -344,7 +344,7 @@ describe MeshCoreTCPMux::Protocol do
     P.validate_response!(clock, bytes(9, 5)).should eq(P::ResponseDisposition::Complete)
     # CURRENT_TIME response (9), 4-byte zero-filled shape fixture.
     expect_raises(P::ProtocolError) { P.validate_response!(clock, bytes(9, 4)) }
-    # OK (0x00): command accepted, not proof of radio delivery.
+    # OK (0x00): generic success is not a valid GET_DEVICE_TIME response.
     expect_raises(P::ProtocolError) { P.validate_response!(clock, Bytes[0_u8]) }
     # ERR (0x01), opaque native reason 99.
     P.validate_response!(clock, Bytes[1_u8, 99_u8]).should eq(P::ResponseDisposition::Complete)

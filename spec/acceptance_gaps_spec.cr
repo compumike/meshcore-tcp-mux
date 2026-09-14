@@ -259,24 +259,24 @@ describe "remaining design acceptance invariants" do
 
     # SET_FLOOD_SCOPE_KEY (54/0x36), mode 1: explicitly unscoped sends.
     h.client(1_i64, Bytes[54_u8, 1_u8])
-    # OK (0x00): command accepted, not proof of radio delivery.
+    # OK (0x00): virtual scope preference accepted.
     h.downstream[1_i64].last.should eq(Bytes[0_u8])
     h.client(1_i64, channel)
     # SET_FLOOD_SCOPE_KEY (54/0x36), mode 1: explicitly unscoped sends.
     h.upstream.shift.payload.should eq(Bytes[54_u8, 1_u8])
-    # OK (0x00): command accepted, not proof of radio delivery.
+    # OK (0x00): hidden unscoped setup completed.
     h.response(Bytes[0_u8])
     h.upstream.shift.payload.should eq(channel)
-    # OK (0x00): command accepted, not proof of radio delivery.
+    # OK (0x00): channel send accepted; radio delivery is not confirmed.
     h.response(Bytes[0_u8])
     # SET_FLOOD_SCOPE_KEY (54/0x36), mode 0 with no key: restore the configured default scope.
     h.upstream.shift.payload.should eq(Bytes[54_u8, 0_u8])
-    # OK (0x00): command accepted, not proof of radio delivery.
+    # OK (0x00): hidden default-scope restoration completed.
     h.response(Bytes[0_u8])
 
     # SET_FLOOD_SCOPE_KEY (54/0x36), mode 0 with no key: restore the configured default scope.
     h.client(1_i64, Bytes[54_u8, 0_u8])
-    # OK (0x00): command accepted, not proof of radio delivery.
+    # OK (0x00): virtual default-scope preference accepted.
     h.downstream[1_i64].last.should eq(Bytes[0_u8])
     # SET_DEFAULT_FLOOD_SCOPE (63): 31-byte NUL-terminated name ('x') plus 16-byte zero key;
     # persistent shared state.
@@ -285,7 +285,7 @@ describe "remaining design acceptance invariants" do
     persistent[1] = 'x'.ord.to_u8
     h.client(1_i64, persistent)
     h.upstream.shift.payload.should eq(persistent)
-    # OK (0x00): command accepted, not proof of radio delivery.
+    # OK (0x00): persistent default scope saved.
     h.response(Bytes[0_u8])
     h.client(1_i64, channel)
     h.upstream.shift.payload.should eq(channel)
@@ -445,7 +445,18 @@ describe "remaining design acceptance invariants" do
     h.now = 5.seconds
     h.broker.tick(h.now)
     h.flush
-    # ERR (0x01), BAD_STATE.
+    # Five seconds no longer expires this sync. Keep the contacts stream
+    # progressing so only the virtual wait reaches its deadline.
+    h.downstream[2_i64].should be_empty
+    [8, 12].each do |second|
+      h.now = second.seconds
+      # CONTACT (3): full 148-byte native record with synthetic zero fields.
+      h.response(Bytes.new(148, 0_u8).tap { |p| p[0] = 3_u8 })
+    end
+    h.now = 15.seconds
+    h.broker.tick(h.now)
+    h.flush
+    # ERR (0x01), BAD_STATE: only the fifteen-second virtual sync has expired.
     h.downstream[2_i64].last.should eq(Bytes[1_u8, 4_u8])
     h.broker.failed.should be_false
     h.broker.active.should_not be_nil
@@ -480,15 +491,26 @@ describe "remaining design acceptance invariants" do
 
   it "rejects an aged queued command in FIFO position and bounds per-client work" do
     config = MeshCoreTCPMux::Config.new
-    config.command_age = 3.seconds
+    # Keep the real fifteen-second queue age; extend the response deadline
+    # so queue expiry, not upstream uncertainty, determines the result.
+    config.response_timeout = 20.seconds
+    config.poll_interval = 60.seconds
     h = GapHarness.new(config)
     # GET_DEVICE_TIME (5): local clock query.
     h.client(1_i64, Bytes[5_u8])
     # GET_DEVICE_TIME (5): local clock query.
-    h.upstream.shift.payload.should eq(Bytes[5_u8])
+    write = h.upstream.shift
+    write.payload.should eq(Bytes[5_u8])
+    # Complete the physical write before advancing beyond its five-second
+    # budget; the query's response remains deliberately outstanding.
+    h.broker.written(0_i64, write.epoch, write.write_id, h.now)
     # SET_DEVICE_TIME (6), timestamp 0 (u32 little-endian); a queued state-changing command.
     h.client(2_i64, Bytes[6_u8, 0_u8, 0_u8, 0_u8, 0_u8])
-    h.now = 3.seconds
+    h.now = 14.seconds
+    h.broker.tick(h.now)
+    h.flush
+    h.downstream[2_i64].should be_empty
+    h.now = 15.seconds
     # CURRENT_TIME (0x09), followed by a four-byte little-endian timestamp; compare the reply
     # byte-for-byte.
     h.response(Bytes[9_u8, 0_u8, 0_u8, 0_u8, 0_u8])
@@ -598,14 +620,14 @@ describe "remaining design acceptance invariants" do
     h.client(1_i64, channel)
     h.upstream.shift.payload.should eq(scope)
     h.close(1_i64)
-    # OK (0x00): command accepted, not proof of radio delivery.
+    # OK (0x00): hidden scope setup completed after owner departure.
     h.response(Bytes[0_u8])
     h.upstream.shift.payload.should eq(channel)
-    # OK (0x00): command accepted, not proof of radio delivery.
+    # OK (0x00): channel send accepted; radio delivery is not confirmed.
     h.response(Bytes[0_u8])
     # SET_FLOOD_SCOPE_KEY (54/0x36), mode 0 with no key: restore the configured default scope.
     h.upstream.shift.payload.should eq(Bytes[54_u8, 0_u8])
-    # OK (0x00): command accepted, not proof of radio delivery.
+    # OK (0x00): hidden default-scope restoration completed.
     h.response(Bytes[0_u8])
     h.upstream.should be_empty
     h.downstream[2_i64].should be_empty
@@ -730,12 +752,12 @@ describe "remaining design acceptance invariants" do
     second = Bytes[34_u8, 3_u8, 4_u8, 5_u8]
     h.client(1_i64, first)
     h.upstream.shift.payload.should eq(first)
-    # OK (0x00): command accepted, not proof of radio delivery.
+    # OK (0x00): first signing chunk accepted.
     h.response(Bytes[0_u8])
     h.now = 1.second
     h.client(1_i64, second)
     h.upstream.shift.payload.should eq(second)
-    # OK (0x00): command accepted, not proof of radio delivery.
+    # OK (0x00): second signing chunk accepted.
     h.response(Bytes[0_u8])
 
     h.now = 31.seconds

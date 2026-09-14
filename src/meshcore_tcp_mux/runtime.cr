@@ -18,6 +18,7 @@ class MeshCoreTCPMux
     @finished = Channel(Nil).new(1)
     @accepted = Channel(TCPSocket).new
     @accept_done = Channel(Nil).new(1)
+    @accept_error : Exception? = nil
     @running = false
     @stop_requested = false
     @server : TCPServer? = nil
@@ -34,9 +35,12 @@ class MeshCoreTCPMux
     end
 
     def run : Nil
+      # Own the listener and every upstream epoch until shutdown. Unexpected
+      # acceptor failure is process-fatal; propagate it only after cleanup so
+      # BinaryEntrypoint exits nonzero and a supervisor can restart the daemon.
       raise "runtime already running" if @running
       @running = true
-      server = TCPServer.new(@config.listen_host, @config.listen_port)
+      server = create_listener
       @server = server
       LOGGER.info { "event=listener.started address=#{socket_address(server.local_address)} upstream=#{@host}:#{@port}" }
       start_acceptor(server)
@@ -68,7 +72,7 @@ class MeshCoreTCPMux
         begin
           startup = synchronize(endpoint, upstream_events, @next_epoch)
           break if @stop_requested
-          self_key = startup.self_info.not_nil![4, 32].dup
+          self_key = startup.self_key.not_nil!
           orphan = orphan_for(self_key)
           broker = Broker.new(@next_epoch, self_key, @config, Clock.now, orphan)
           ready_at = Clock.now
@@ -91,6 +95,9 @@ class MeshCoreTCPMux
         wait_with_refusal(delay)
         backoff = {backoff * 2, 30.seconds}.min
       end
+      if error = @accept_error
+        raise error
+      end
     ensure
       @stop_requested = true
       @stopping.close unless @stopping.closed?
@@ -105,7 +112,22 @@ class MeshCoreTCPMux
     end
 
     def stop : Nil
-      # Stops only local I/O. It deliberately emits no radio command.
+      # Request cancellation and join the runtime from an external fiber.
+      # The acceptor uses request_stop without joining, avoiding a circular wait.
+      return if @stop_requested
+      request_stop
+      @finished.receive if @running
+    end
+
+    protected def create_listener : TCPServer
+      # Separate listener creation from its ownership loop so socket faults can
+      # be injected in specs without exhausting machine-wide descriptors.
+      TCPServer.new(@config.listen_host, @config.listen_port)
+    end
+
+    private def request_stop : Nil
+      # Wake every lifecycle wait and interrupt local socket I/O. Never send a
+      # radio command or wait for another fiber here: the acceptor also calls us.
       return if @stop_requested
       LOGGER.info { "event=runtime.stop_requested clients=#{@clients.size} epoch=#{@next_epoch}" }
       @stop_requested = true
@@ -113,10 +135,11 @@ class MeshCoreTCPMux
       @server.try &.close
       @upstream.try &.socket.close
       @clients.each_value { |endpoint| endpoint.socket.close rescue nil }
-      @finished.receive if @running
     end
 
     private def start_acceptor(server : TCPServer) : Nil
+      # Transfer each accepted socket through a cancellable handoff. A failed
+      # accept must stop the process, not leave a live daemon with a dead listener.
       spawn do
         begin
           loop do
@@ -132,8 +155,12 @@ class MeshCoreTCPMux
               break
             end
           end
-        rescue ex : IO::Error
-          LOGGER.error(exception: ex) { "event=listener.failed" } unless @stop_requested
+        rescue ex
+          unless @stop_requested
+            @accept_error = ex
+            LOGGER.error(exception: ex) { "event=listener.failed" }
+            request_stop
+          end
         ensure
           @accept_done.send(nil)
         end
@@ -141,6 +168,8 @@ class MeshCoreTCPMux
     end
 
     private def connect_upstream : TCPSocket?
+      # Refuse downstream sockets during the bounded connect attempt. Join the
+      # connector even on cancellation so a late socket cannot leak or start an epoch.
       LOGGER.info { "event=upstream.connecting remote=#{@host}:#{@port}" }
       result = Channel(ConnectResult).new(1)
       done = Channel(Nil).new(1)
@@ -184,6 +213,8 @@ class MeshCoreTCPMux
     end
 
     private def synchronize(endpoint : Transport::Endpoint, events : Channel(Transport::Event), epoch : Int64) : Startup
+      # Keep startup responses private and refuse clients until the complete
+      # fence and scope reset succeed. Only validated frames establish readiness.
       endpoint.start # reader is running before any probe is enqueued
       startup = Startup.new(Clock.now, @config.startup_timeout)
       Startup.probes.each_with_index do |payload, index|
@@ -224,6 +255,8 @@ class MeshCoreTCPMux
     end
 
     private def run_epoch(broker : Broker, upstream : Transport::Endpoint, upstream_events : Channel(Transport::Event)) : Nil
+      # This fiber alone calls Broker. Apply actions after each event, then tick
+      # deadlines even during continuous traffic; uncertain execution is never replayed.
       downstream_events = Channel(Transport::Event).new
       ended = apply_actions(broker, upstream)
       until ended || @stop_requested
@@ -318,6 +351,8 @@ class MeshCoreTCPMux
     end
 
     private def apply_actions(broker : Broker, upstream : Transport::Endpoint) : Bool
+      # Execute effects only after ownership decisions finish. Queue failures
+      # can generate more actions, so drain those before accepting another event.
       ended = false
       loop do
         actions = broker.take_actions
@@ -370,6 +405,8 @@ class MeshCoreTCPMux
     end
 
     private def close_all_clients : Nil
+      # Detach the client map before joining endpoints so cancellation cannot
+      # leave a stopped socket available to later actions from the old epoch.
       clients = @clients
       @clients = Hash(Int64, Transport::Endpoint).new
       LOGGER.info { "event=clients.closing count=#{clients.size} epoch=#{@next_epoch}" } unless clients.empty?
@@ -397,6 +434,8 @@ class MeshCoreTCPMux
     end
 
     private def wait_with_refusal(duration : Time::Span) : Nil
+      # Keep the listener responsive during backoff without admitting sessions
+      # that have no synchronized upstream; shutdown interrupts this wait.
       deadline = Clock.now + duration
       loop do
         remaining = deadline - Clock.now

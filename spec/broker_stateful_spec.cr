@@ -333,9 +333,9 @@ describe "broker stateful operations" do
     channel = Bytes[3, 0, 4, 0x78, 0x56, 0x34, 0x12, 0x68, 0x69]
     h.client(2, channel)
     h.upstream.shift.should eq(channel)
-    # OK (0x00): command accepted, not proof of radio delivery.
+    # OK (0x00): channel send accepted; radio delivery is not confirmed.
     h.response(Bytes[0])
-    # OK (0x00): command accepted, not proof of radio delivery.
+    # OK (0x00): channel acceptance reaches only its owner.
     h.replies[2_i64].should eq([Bytes[0]])
     h.upstream.should be_empty
   end
@@ -349,7 +349,7 @@ describe "broker stateful operations" do
     scope[0] = 54
     scope[1] = 0
     h.client(1, scope)
-    # OK (0x00): command accepted, not proof of radio delivery.
+    # OK (0x00): virtual scope preference accepted.
     h.replies[1_i64].shift.should eq(Bytes[0])
     h.upstream.should be_empty
     # Client 2 still uses the physical default and needs no hidden setup.
@@ -363,7 +363,7 @@ describe "broker stateful operations" do
     # any part of the compound send, including restoration after SENT.
     # GET_DEVICE_TIME (5): local clock query.
     h.client(2, Bytes[5])
-    # OK (0x00): command accepted, not proof of radio delivery.
+    # OK (0x00): hidden scope setup completed.
     h.response(Bytes[0])
     h.upstream.shift.should eq(stateful_dm)
     h.replies[1_i64].should be_empty
@@ -372,7 +372,7 @@ describe "broker stateful operations" do
     h.replies[1_i64].should eq([stateful_sent(2)])
     # SET_FLOOD_SCOPE_KEY (54/0x36), mode 0 with no key: restore the configured default scope.
     h.upstream.shift.should eq(Bytes[54, 0])
-    # OK (0x00): command accepted, not proof of radio delivery.
+    # OK (0x00): hidden default-scope restoration completed.
     h.response(Bytes[0])
     # GET_DEVICE_TIME (5): local clock query.
     h.upstream.shift.should eq(Bytes[5])
@@ -397,7 +397,7 @@ describe "broker stateful operations" do
     h.client(1, stateful_dm)
     # SET_FLOOD_SCOPE_KEY (54/0x36), mode 1: explicitly unscoped sends.
     h.upstream.shift.should eq(Bytes[54, 1])
-    # OK (0x00): command accepted, not proof of radio delivery.
+    # OK (0x00): hidden scope setup completed.
     h.response(Bytes[0])
     h.upstream.shift.should eq(stateful_dm)
     h.response(stateful_sent)
@@ -569,7 +569,7 @@ describe "broker stateful operations" do
     # SIGN_DATA (34/0x22), followed by 2 literal data byte(s); only accepted data counts against
     # the signing budget.
     h.upstream.shift.should eq(Bytes[34, 1, 2])
-    # OK (0x00): command accepted, not proof of radio delivery.
+    # OK (0x00): signing data appended to the owner's operation.
     h.response(Bytes[0])
     # Two bytes are already accepted against a three-byte budget. Another
     # two-byte chunk must be refused locally, without corrupting signing state.

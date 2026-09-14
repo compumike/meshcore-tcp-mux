@@ -81,7 +81,7 @@ private class IsolatedProbeCompanion
                  SpecSupport::NativeStartupTransport.device_info
                when 0x36 # SET_FLOOD_SCOPE_KEY.
                  # ERR (0x01), BAD_STATE.
-                 # OK (0x00): command accepted, not proof of radio delivery.
+                 # OK (0x00): startup default-scope restoration completed.
                  @mode == :scope_failure ? Bytes[1_u8, 4_u8] : Bytes[0_u8]
                else
                  # ERR (0x01), UNSUPPORTED_CMD.

@@ -28,6 +28,7 @@ format-check:
 
 # Requires meshcore==2.3.9.1 and meshcore-cli==1.6.3 in PYTHON's environment.
 smoke: $(BINARY)
+	$(PYTHON) -m unittest discover -s scripts -p 'test_*.py'
 	$(PYTHON) scripts/check_fake_clients.py --mux-binary $(BINARY)
 
 ci: format-check all spec smoke

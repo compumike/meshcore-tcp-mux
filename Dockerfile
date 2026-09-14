@@ -17,13 +17,14 @@ RUN apk add --no-cache python3 py3-pip \
     && python3 -m venv /opt/test-env \
     && /opt/test-env/bin/pip install --no-cache-dir meshcore==2.3.9.1 meshcore-cli==1.6.3
 COPY spec/ ./spec/
-COPY scripts/check_fake_clients.py ./scripts/check_fake_clients.py
+COPY scripts/check_fake_clients.py scripts/check_live_reconnect.py scripts/check_clients.py scripts/test_readiness.py ./scripts/
 RUN make format-check spec smoke PYTHON=/opt/test-env/bin/python
 
 FROM alpine:3.23@sha256:fd791d74b68913cbb027c6546007b3f0d3bc45125f797758156952bc2d6daf40 AS runtime
 RUN addgroup -S -g 10001 mux && adduser -S -D -H -u 10001 -G mux mux
 # Copying from test makes successful tests a prerequisite for the final image.
 COPY --from=test /app/out/meshcore-tcp-mux /usr/local/bin/meshcore-tcp-mux
+COPY LICENSE /usr/share/licenses/meshcore-tcp-mux/LICENSE
 USER 10001:10001
 RUN /usr/local/bin/meshcore-tcp-mux --help > /dev/null
 EXPOSE 5001/tcp
