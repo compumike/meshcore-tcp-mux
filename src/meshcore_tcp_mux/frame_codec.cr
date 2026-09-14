@@ -1,19 +1,26 @@
 class MeshCoreTCPMux
+  # Namespace for the TCP multiplexer: transport, protocol validation, and per-client state.
   class FrameCodec
+    # Encodes and incrementally decodes the three-byte TCP envelope around companion payloads.
+    # It checks framing and assembly deadlines, leaving opcode validation to Protocol.
     MAX_PAYLOAD_SIZE           = 176
     CLIENT_TO_COMPANION_MARKER = '<'.ord.to_u8
     COMPANION_TO_CLIENT_MARKER = '>'.ord.to_u8
 
     class Error < Exception
+      # Base exception for invalid or incomplete TCP frames.
     end
 
     class MalformedFrameError < Error
+      # The envelope has an invalid direction marker or payload length.
     end
 
     class FrameDeadlineExceededError < Error
+      # A partial frame exceeded its assembly deadline.
     end
 
     class TruncatedFrameError < Error
+      # The socket ended while an envelope or payload was still incomplete.
     end
 
     class Decoder
@@ -31,7 +38,7 @@ class MeshCoreTCPMux
       @payload_size = 0
       @started_at : Time::Span? = nil
 
-      def initialize(@marker : UInt8, @assembly_timeout : Time::Span = 5.seconds)
+      def initialize(@marker : UInt8, @assembly_timeout : Time::Span = 5.seconds) : Nil
         FrameCodec.validate_marker!(@marker)
         raise ArgumentError.new("assembly timeout must be positive") unless @assembly_timeout > Time::Span.zero
       end
@@ -104,6 +111,7 @@ class MeshCoreTCPMux
       end
 
       private def allocate_payload! : Nil
+        # Header byte 0 is direction; bytes 1 and 2 hold the low/high payload-length bytes.
         size = @header[1].to_i | (@header[2].to_i << 8)
         unless 1 <= size <= MAX_PAYLOAD_SIZE
           raise MalformedFrameError.new("payload length #{size} is outside 1..#{MAX_PAYLOAD_SIZE}")
@@ -121,6 +129,8 @@ class MeshCoreTCPMux
     end
 
     def self.encode(payload : Bytes, marker : UInt8) : Bytes
+      # Envelope: one direction byte, then unsigned 16-bit little-endian payload length.
+      # Mask with 0xff to extract each length byte; the body starts at offset 3.
       validate_marker!(marker)
       size = payload.size
       unless 1 <= size <= MAX_PAYLOAD_SIZE

@@ -1,6 +1,7 @@
 require "../../src/meshcore_tcp_mux/frame_codec"
 
 class SpecSupport
+  # Namespace for fake companion transports shared by the integration specs.
   class NativeStartupTransport
     # Synthetic firmware fixtures shared by startup and runtime specs. Payloads
     # exclude the TCP envelope. Distinguishing bytes identify fake epochs/contacts;
@@ -30,7 +31,7 @@ class SpecSupport
       contacts : Array(Bytes) = [] of Bytes,
       @drop_responses : Array(Int32) = [] of Int32,
       @pushes_after_commands : Array(Bytes) = [] of Bytes,
-    )
+    ) : Nil
       raise ArgumentError.new("native retained queue holds at most four frames") if retained.size > MAX_RETAINED_FRAMES
       @send_queue = retained.map(&.dup)
       @contacts = contacts.map(&.dup)
@@ -95,12 +96,12 @@ class SpecSupport
 
     private def handle(command : Bytes) : Nil
       response = case command[0]?
-                 when 0x01
+                 when 0x01 # APP_START.
                    @iterator_active = false
                    self.class.self_info
-                 when 0x16
+                 when 0x16 # DEVICE_QUERY.
                    self.class.device_info
-                 when 0x36
+                 when 0x36 # SET_FLOOD_SCOPE_KEY.
                    # SET_FLOOD_SCOPE_KEY (54/0x36), mode 0 with no key: restore the configured
                    # default scope.
                    # OK (0x00): command accepted, not proof of radio delivery.

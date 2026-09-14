@@ -16,7 +16,7 @@ private class IsolatedProbeCompanion
   @socket : TCPSocket? = nil
   @stopped = false
 
-  def initialize(@mode = :success)
+  def initialize(@mode = :success) : Nil
     @server = TCPServer.new("127.0.0.1", 0)
     @port = @server.local_address.port
     spawn { serve }
@@ -74,12 +74,12 @@ private class IsolatedProbeCompanion
 
   private def respond(socket : TCPSocket, payload : Bytes) : Nil
     response = case payload[0]
-               when 1
+               when 1 # APP_START.
                  SpecSupport::NativeStartupTransport.self_info
-               when 0x16
+               when 0x16 # DEVICE_QUERY.
                  return if @mode == :drop_device_query
                  SpecSupport::NativeStartupTransport.device_info
-               when 0x36
+               when 0x36 # SET_FLOOD_SCOPE_KEY.
                  # ERR (0x01), BAD_STATE.
                  # OK (0x00): command accepted, not proof of radio delivery.
                  @mode == :scope_failure ? Bytes[1_u8, 4_u8] : Bytes[0_u8]

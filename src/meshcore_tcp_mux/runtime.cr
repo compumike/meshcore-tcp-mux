@@ -6,6 +6,7 @@ require "./startup"
 require "./transport"
 
 class MeshCoreTCPMux
+  # Namespace for the TCP multiplexer: transport, protocol validation, and per-client state.
   class Runtime
     # Owns the listener, upstream epochs, socket fibers, and Broker side effects.
     # The Broker is invoked only by this fiber.
@@ -27,7 +28,7 @@ class MeshCoreTCPMux
     @last_malformed_log : Time::Span? = nil
     @suppressed_malformed = 0_u64
 
-    def initialize(@host : String, @port : Int32, @config : Config)
+    def initialize(@host : String, @port : Int32, @config : Config) : Nil
     end
 
     def run : Nil
@@ -304,7 +305,7 @@ class MeshCoreTCPMux
       ended
     end
 
-    private def log_diagnostic(action : Diagnostic)
+    private def log_diagnostic(action : Diagnostic) : Nil
       if action.category == :malformed
         now = Clock.now
         if (last = @last_malformed_log) && now - last < 1.second

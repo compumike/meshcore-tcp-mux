@@ -1,14 +1,14 @@
 require "./spec_helper"
 require "../src/meshcore_tcp_mux/startup"
 
-private def self_reply
+private def self_reply : Bytes
   # SELF_INFO: minimum 58-byte response; opcode 5, public key occupies offsets 4..35.
   bytes = Bytes.new(58, 0)
   bytes[0] = 5
   bytes
 end
 
-private def device_reply
+private def device_reply : Bytes
   # DEVICE_INFO: exactly 82 bytes, opcode 0x0d, protocol version 13 at offset 1; other fields
   # are synthetic.
   bytes = Bytes.new(82, 0)

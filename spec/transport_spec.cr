@@ -20,6 +20,7 @@ private def unused_tcp_port : Int32
 end
 
 class FaultingWriteSocket < TCPSocket
+  # Simulates a socket that fails after a partial write, proving Transport never retries a frame prefix.
   # Loopback-only transport tests: endpoints frame and own bytes but do not
   # validate command semantics. Several short payloads are ordering sentinels,
   # not valid MeshCore replies. The final runtime test adds a protocol-aware fake.
@@ -221,18 +222,18 @@ describe MeshCoreTCPMux::Runtime do
           break if count == 0
           decoder.feed(buffer[0, count], MeshCoreTCPMux::Clock.now) do |payload|
             response = case payload[0]
-                       when 1
+                       when 1 # APP_START.
                          SpecSupport::NativeStartupTransport.self_info
-                       when 0x16
+                       when 0x16 # DEVICE_QUERY.
                          SpecSupport::NativeStartupTransport.device_info
-                       when 0x36
+                       when 0x36 # SET_FLOOD_SCOPE_KEY.
                          scope_written.send(nil)
                          # OK (0x00): command accepted, not proof of radio delivery.
                          Bytes[0_u8]
-                       when 10
+                       when 10 # SYNC_NEXT_MESSAGE.
                          # NO_MORE_MESSAGES (0x0a): inbox empty.
                          Bytes[10_u8]
-                       when 5
+                       when 5 # GET_DEVICE_TIME.
                          # CURRENT_TIME (0x09), followed by a four-byte little-endian timestamp;
                          # compare the reply byte-for-byte.
                          Bytes[9_u8, 0x78_u8, 0x56_u8, 0x34_u8, 0x12_u8]
@@ -265,7 +266,7 @@ describe MeshCoreTCPMux::Runtime do
     replies = [] of Bytes
     # Socket read scratch space; capacity is arbitrary and is not a protocol field.
     buffer = Bytes.new(128)
-    until replies.any? { |payload| payload[0] == 9 }
+    until replies.any? { |payload| payload[0] == 9 } # 9 = CURRENT_TIME.
       count = client.read(buffer)
       decoder.feed(buffer[0, count], MeshCoreTCPMux::Clock.now) { |payload| replies << payload }
     end

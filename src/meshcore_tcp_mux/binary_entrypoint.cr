@@ -3,8 +3,11 @@ require "./upstream"
 require "./runtime"
 
 class MeshCoreTCPMux
+  # Namespace for the TCP multiplexer: transport, protocol validation, and per-client state.
   class BinaryEntrypoint
-    def initialize
+    # Parses command-line options and starts either the diagnostic probe or the mux runtime.
+    # Keeps process setup and exit handling out of the protocol and broker classes.
+    def initialize : Nil
       host : String? = nil
       port : Int32? = nil
       probe = false

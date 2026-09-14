@@ -4,7 +4,9 @@ require "./config"
 require "./transport"
 
 class MeshCoreTCPMux
+  # Namespace for the TCP multiplexer: transport, protocol validation, and per-client state.
   class Upstream
+    # Offers a one-shot diagnostic probe using the same transport and startup fence as Runtime.
     def self.probe(host : String, port : Int32, config = Config.new) : String
       # A standalone version probe is also useful when diagnosing deployment access.
       # It uses the same synchronization fence as the daemon, with no listener.

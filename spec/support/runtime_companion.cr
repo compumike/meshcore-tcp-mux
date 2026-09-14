@@ -3,6 +3,7 @@ require "../../src/meshcore_tcp_mux/frame_codec"
 require "./native_startup"
 
 class SpecSupport
+  # Namespace for fake companion transports shared by the integration specs.
   class RuntimeCompanion
     # Scripted loopback companion: startup is automatic, then each command waits
     # for a test directive. Drop omits a reply but keeps the socket open; RawAndClose
@@ -29,7 +30,7 @@ class SpecSupport
     @stopped = false
     @socket : TCPSocket? = nil
 
-    def initialize(@identities : Array(UInt8) = [0xa5_u8])
+    def initialize(@identities : Array(UInt8) = [0xa5_u8]) : Nil
       # Default fake identity marker; later epochs reuse the last supplied value.
       @server = TCPServer.new("127.0.0.1", 0)
       @port = @server.local_address.port
@@ -93,11 +94,11 @@ class SpecSupport
         decoder.feed(buffer[0, count], MeshCoreTCPMux::Clock.now) do |payload|
           unless startup_complete
             case payload[0]
-            when 1
+            when 1 # APP_START.
               write(socket, NativeStartupTransport.self_info(identity))
-            when 0x16
+            when 0x16 # DEVICE_QUERY.
               write(socket, NativeStartupTransport.device_info)
-            when 0x36
+            when 0x36 # SET_FLOOD_SCOPE_KEY.
               # OK (0x00): command accepted, not proof of radio delivery.
               write(socket, Bytes[0_u8])
               startup_complete = true

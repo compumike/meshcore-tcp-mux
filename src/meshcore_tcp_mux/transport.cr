@@ -3,7 +3,10 @@ require "./config"
 require "./frame_codec"
 
 class MeshCoreTCPMux
+  # Namespace for the TCP multiplexer: transport, protocol validation, and per-client state.
   class Transport
+    # Bridges sockets and Runtime using framed events and bounded write queues.
+    # Endpoints handle byte I/O and deadlines; Broker alone decides protocol ownership and routing.
     record Frame, endpoint : Int64, payload : Bytes
     record Closed, endpoint : Int64, reason : String, category : Symbol = :normal
     record Written, endpoint : Int64, epoch : Int64, write_id : Int64
@@ -32,7 +35,7 @@ class MeshCoreTCPMux
         @frame_timeout : Time::Span,
         write_timeout : Time::Span,
         output_capacity : Int32,
-      )
+      ) : Nil
         raise ArgumentError.new("output capacity must be positive") unless output_capacity > 0
         @writes = Channel(Write).new(output_capacity)
         @socket.tcp_nodelay = true

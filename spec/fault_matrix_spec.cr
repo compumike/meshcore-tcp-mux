@@ -3,7 +3,7 @@ require "../src/meshcore_tcp_mux/broker"
 
 private alias MatrixAction = MeshCoreTCPMux::Action
 
-private def matrix_sends(actions : Array(MatrixAction), session : Int64? = nil)
+private def matrix_sends(actions : Array(MatrixAction), session : Int64? = nil) : Array(MeshCoreTCPMux::SendFrame)
   actions.compact_map do |action|
     action.as?(MeshCoreTCPMux::SendFrame).try { |send| send if session.nil? || send.session == session }
   end
@@ -111,7 +111,7 @@ private def matrix_phase(phase : Symbol) : {MeshCoreTCPMux::Broker, Time::Span}
   {broker, now}
 end
 
-private def assert_matrix_epoch_ended(broker : MeshCoreTCPMux::Broker)
+private def assert_matrix_epoch_ended(broker : MeshCoreTCPMux::Broker) : Nil
   actions = broker.take_actions
   actions.compact_map(&.as?(MeshCoreTCPMux::CloseSession)).map(&.session).sort.should eq([1_i64, 2_i64])
   actions.any?(MeshCoreTCPMux::EndEpoch).should be_true

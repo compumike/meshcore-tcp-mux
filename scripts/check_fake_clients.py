@@ -82,6 +82,7 @@ def contact_message(text: str, timestamp: int = 1234) -> bytes:
 
 
 def legacy_contact_message(text: str, timestamp: int = 1111) -> bytes:
+    # CONTACT_MESSAGE (0x07): peer prefix, unknown path (0xff), plain text (0), timestamp, body.
     return (
         bytes([0x07])
         + b"OLD001"
@@ -92,6 +93,7 @@ def legacy_contact_message(text: str, timestamp: int = 1111) -> bytes:
 
 
 def channel_message(text: str, timestamp: int = 2345) -> bytes:
+    # CHANNEL_MESSAGE_V3 (0x11): SNR, two reserved bytes, channel 1, unknown path (0xff), plain text (0).
     return (
         bytes([0x11, 12, 0, 0, 1, 0xFF, 0])
         + timestamp.to_bytes(4, "little")
@@ -100,6 +102,7 @@ def channel_message(text: str, timestamp: int = 2345) -> bytes:
 
 
 class FakeCompanion:
+    # Loopback companion implementing startup, contacts, time, and inbox operations for real Python clients.
     def __init__(self) -> None:
         self.server: asyncio.Server | None = None
         self.writer: asyncio.StreamWriter | None = None
@@ -137,7 +140,7 @@ class FakeCompanion:
 
     async def enqueue(self, *payloads: bytes) -> None:
         self.offline.extend(payloads)
-        await self.send(bytes([0x83]))
+        await self.send(bytes([0x83]))  # MSG_WAITING: prompt the mux to drain the physical inbox.
 
     async def handle(
         self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
@@ -149,7 +152,7 @@ class FakeCompanion:
         try:
             while True:
                 header = await reader.readexactly(3)
-                if header[0] != 0x3C:
+                if header[0] != 0x3C:  # '<': client-to-companion TCP direction marker.
                     raise AssertionError(f"wrong request marker 0x{header[0]:02x}")
                 length = int.from_bytes(header[1:3], "little")
                 payload = await reader.readexactly(length)
@@ -168,31 +171,31 @@ class FakeCompanion:
             raise AssertionError("mux sent an empty command")
         opcode = payload[0]
         self.commands[opcode] += 1
-        if opcode == 1:
+        if opcode == 1:  # APP_START.
             await self.send(self_info())
-        elif opcode == 22:
+        elif opcode == 22:  # DEVICE_QUERY.
             if len(payload) < 2:
                 raise AssertionError("truncated DEVICE_QUERY")
             self.query_targets.append(payload[1])
             await self.send(device_info())
-        elif opcode == 54:
-            await self.send(bytes([0]))
-        elif opcode == 10:
-            await self.send(self.offline.popleft() if self.offline else bytes([10]))
-        elif opcode == 4:
+        elif opcode == 54:  # SET_FLOOD_SCOPE_KEY.
+            await self.send(bytes([0]))  # OK: scope accepted.
+        elif opcode == 10:  # SYNC_NEXT_MESSAGE.
+            await self.send(self.offline.popleft() if self.offline else bytes([10]))  # NO_MORE_MESSAGES.
+        elif opcode == 4:  # GET_CONTACTS.
             # meshcore_py get_contacts installs stream listeners immediately after
             # its fire-and-return send. Yield so even an in-process fake cannot
             # outrun that public API sequence.
             await asyncio.sleep(0.02)
-            await self.send(bytes([2]) + (2).to_bytes(4, "little"))
+            await self.send(bytes([2]) + (2).to_bytes(4, "little"))  # CONTACTS_START: two records follow.
             await self.send(contact_record(1))
             await self.send(contact_record(2))
-            await self.send(bytes([4]) + (202).to_bytes(4, "little"))
-        elif opcode == 5:
+            await self.send(bytes([4]) + (202).to_bytes(4, "little"))  # END_OF_CONTACTS: synthetic last-modified time.
+        elif opcode == 5:  # GET_DEVICE_TIME.
             self.time_value += 1
-            await self.send(bytes([9]) + self.time_value.to_bytes(4, "little"))
+            await self.send(bytes([9]) + self.time_value.to_bytes(4, "little"))  # CURRENT_TIME: u32 timestamp.
         else:
-            await self.send(bytes([1, 1]))
+            await self.send(bytes([1, 1]))  # ERR, UNSUPPORTED_CMD: fake intentionally implements a subset.
 
 
 def reserve_port() -> int:

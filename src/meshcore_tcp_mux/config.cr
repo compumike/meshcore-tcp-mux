@@ -1,5 +1,7 @@
 class MeshCoreTCPMux
+  # Namespace for the TCP multiplexer: transport, protocol validation, and per-client state.
   class Config
+    # Shared runtime/broker settings: listener address, queue budgets, deadlines, and permissions.
     # Limits count queued and currently written data. There is intentionally no
     # fixed client-count cap: each connection has its own finite budgets.
     property listen_host = "127.0.0.1"
@@ -20,7 +22,7 @@ class MeshCoreTCPMux
     property maintenance = false
     property private_key_export = false
 
-    def validate!
+    def validate! : Nil
       raise ArgumentError.new("listen port must be between 1 and 65535") unless (1..65535).includes?(@listen_port)
       unless {@command_limit, @inbox_entries, @inbox_bytes, @output_frames, @output_bytes}.all? { |n| n > 0 }
         raise ArgumentError.new("queue budgets must be positive")
@@ -33,6 +35,7 @@ class MeshCoreTCPMux
   end
 
   class Clock
+    # Supplies monotonic elapsed time for deadlines, unaffected by wall-clock corrections.
     ORIGIN = Time.instant
 
     def self.now : Time::Span

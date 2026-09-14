@@ -3,7 +3,7 @@ require "../src/meshcore_tcp_mux/broker"
 
 private alias MuxAction = MeshCoreTCPMux::Action
 
-private def sends(actions : Array(MuxAction), session : Int64? = nil)
+private def sends(actions : Array(MuxAction), session : Int64? = nil) : Array(MeshCoreTCPMux::SendFrame)
   actions.compact_map do |action|
     if action.is_a?(MeshCoreTCPMux::SendFrame) && (session.nil? || action.session == session)
       action
@@ -11,7 +11,7 @@ private def sends(actions : Array(MuxAction), session : Int64? = nil)
   end
 end
 
-private def close_actions(actions : Array(MuxAction))
+private def close_actions(actions : Array(MuxAction)) : Array(MeshCoreTCPMux::CloseSession)
   actions.select(MeshCoreTCPMux::CloseSession)
 end
 
@@ -20,7 +20,7 @@ private def one(items : Array(T)) : T forall T
   items[0]
 end
 
-private def settle_pumps(broker : MeshCoreTCPMux::Broker, now = Time::Span.zero)
+private def settle_pumps(broker : MeshCoreTCPMux::Broker, now = Time::Span.zero) : Nil
   # Admission schedules internal inbox probes. Answer them empty before each test;
   # otherwise an initialization pop would obscure the user-command ordering.
   loop do
@@ -34,7 +34,7 @@ private def settle_pumps(broker : MeshCoreTCPMux::Broker, now = Time::Span.zero)
   end
 end
 
-private def admit_settled(broker : MeshCoreTCPMux::Broker, ids : Array(Int64), now = Time::Span.zero)
+private def admit_settled(broker : MeshCoreTCPMux::Broker, ids : Array(Int64), now = Time::Span.zero) : Array(MeshCoreTCPMux::Action)
   ids.each { |id| broker.admit(id, now) }
   settle_pumps(broker, now)
   broker.take_actions

@@ -18,7 +18,7 @@ private class StatefulHarness
   getter replies = Hash(Int64, Array(Bytes)).new { |h, k| h[k] = [] of Bytes }
   property now = Time::Span.zero
 
-  def initialize(config = MeshCoreTCPMux::Config.new)
+  def initialize(config = MeshCoreTCPMux::Config.new) : Nil
     # Synthetic 32-byte companion public key; identifies the epoch, never a real radio key.
     @broker = MeshCoreTCPMux::Broker.new(1_i64, Bytes.new(32, 0x77), config)
     @broker.admit(1_i64, @now)
@@ -34,17 +34,17 @@ private class StatefulHarness
     end
   end
 
-  def client(id, payload)
+  def client(id, payload) : Nil
     @broker.client_frame(id.to_i64, payload, @now)
     flush
   end
 
-  def response(payload)
+  def response(payload) : Nil
     @broker.upstream_frame(payload, @now)
     flush
   end
 
-  def flush
+  def flush : Nil
     loop do
       actions = @broker.take_actions
       break if actions.empty?
@@ -62,7 +62,7 @@ private class StatefulHarness
   end
 end
 
-private def stateful_sent(token : UInt8 = 1)
+private def stateful_sent(token : UInt8 = 1) : Bytes
   # SENT is acceptance, not delivery: [0x06, routing mode, ACK token (4 bytes),
   # suggested timeout in milliseconds (u32 little-endian)]. 0x1f40 is 8000 ms.
   # Vary only the token's first byte so ring-slot ownership is easy to track.
@@ -71,7 +71,7 @@ private def stateful_sent(token : UInt8 = 1)
   Bytes[6, 1, token, 0xbb, 0xcc, 0xdd, 0x40, 0x1f, 0, 0]
 end
 
-private def stateful_dm
+private def stateful_dm : Bytes
   # SEND_TXT_MSG: opcode 2, plain-text type 0, attempt 2, timestamp 0x12345678
   # (u32 little-endian), six-byte synthetic recipient prefix 01..06, then "hi".
   # The nonzero attempt/timestamp make unwanted rewriting visible in equality tests.
@@ -158,10 +158,10 @@ describe "broker stateful operations" do
       expected = case item[0]
                  # CONTACT_MESSAGE (0x07) legacy opcode; append the original body after
                  # stripping V3 metadata.
-                 when 0x10 then Bytes[7] + item[4..]
-                   # CHANNEL_MESSAGE (0x08) legacy opcode; append the original body after
-                   # stripping V3 metadata.
-                 when 0x11 then Bytes[8] + item[4..]
+                 when 0x10 then Bytes[7] + item[4..] # CONTACT_MESSAGE_V3 -> CONTACT_MESSAGE.
+                 # CHANNEL_MESSAGE (0x08) legacy opcode; append the original body after
+                 # stripping V3 metadata.
+                 when 0x11 then Bytes[8] + item[4..] # CHANNEL_MESSAGE_V3 -> CHANNEL_MESSAGE.
                  else           item
                  end
       h.replies[1_i64].should eq([expected])

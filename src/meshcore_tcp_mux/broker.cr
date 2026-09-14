@@ -4,10 +4,13 @@ require "./protocol"
 require "./leases"
 
 class MeshCoreTCPMux
+  # Namespace for the TCP multiplexer: transport, protocol validation, and per-client state.
   class Broker
+    # Owns all mutable protocol state and schedules clients onto one companion connection.
+    # Runtime delivers socket events here and executes the returned actions; the broker does no I/O.
     class Transaction
-      # All mutable protocol state lives here. Socket fibers exchange events with
-      # the runtime; they never inspect or modify these queues and transactions.
+      # Tracks the sole in-flight upstream command, its response grammar, and its owner.
+      # Also tracks hidden scope setup/restoration and write completion before releasing ownership.
       getter owner : Int64
       getter command : Bytes
       getter descriptor : Protocol::CommandDescriptor
@@ -25,7 +28,7 @@ class MeshCoreTCPMux
       property response_frames = 0
 
       def initialize(@owner, @command, @descriptor, @started,
-                     @pop_sequence = 0_i64, @notification_generation = 0_i64)
+                     @pop_sequence = 0_i64, @notification_generation = 0_i64) : Nil
         @progress = @started
       end
     end
@@ -52,18 +55,21 @@ class MeshCoreTCPMux
     @last_orphan_log : Time::Span? = nil
 
     def initialize(@epoch : Int64, @self_key : Bytes, @config = Config.new, now = Time::Span.zero,
-                   @orphan : Bytes? = nil)
+                   @orphan : Bytes? = nil) : Nil
       @last_poll = now
       @signing = SigningLease.new(@config.signing_timeout)
     end
 
     def take_actions : Array(Action)
+      # Transfer pending effects to Runtime and start a fresh batch; no socket operations occur here.
       result = @actions
       @actions = Array(Action).new
       result
     end
 
-    def admit(id : Int64, now : Time::Span)
+    def admit(id : Int64, now : Time::Span) : Nil
+      # Create an independent client view and include it in round-robin scheduling. ID 0 is reserved
+      # for the broker's physical inbox consumer; downstream clients have positive IDs.
       @now = now
       if @failed || @active.try(&.maintenance)
         @actions << CloseSession.new(id, "upstream unavailable")
@@ -80,7 +86,8 @@ class MeshCoreTCPMux
       schedule(now)
     end
 
-    def client_frame(id : Int64, payload : Bytes, now : Time::Span)
+    def client_frame(id : Int64, payload : Bytes, now : Time::Span) : Nil
+      # Queue a complete downstream command without allowing an unbounded client backlog.
       @now = now
       return if @failed
       return unless session = @sessions[id]?
@@ -93,7 +100,7 @@ class MeshCoreTCPMux
       schedule(now)
     end
 
-    def client_closed(id : Int64, now : Time::Span, reason = "client disconnected", category = :normal)
+    def client_closed(id : Int64, now : Time::Span, reason = "client disconnected", category = :normal) : Nil
       @now = now
       remove(id, reason, category)
       # An active command remains owned until its real terminator, even though
@@ -101,7 +108,8 @@ class MeshCoreTCPMux
       schedule(now)
     end
 
-    def written(id : Int64, epoch : Int64, write_id : Int64, now : Time::Span)
+    def written(id : Int64, epoch : Int64, write_id : Int64, now : Time::Span) : Nil
+      # Release output budgets only for completions from this epoch; stale writer events cannot affect new state.
       return unless epoch == @epoch && !@failed
       if id == 0
         @upstream_writes.delete(write_id)
@@ -117,7 +125,7 @@ class MeshCoreTCPMux
       schedule(now)
     end
 
-    def write_failed(id : Int64, epoch : Int64, reason : String, now : Time::Span)
+    def write_failed(id : Int64, epoch : Int64, reason : String, now : Time::Span) : Nil
       return unless epoch == @epoch && !@failed
       if id == 0
         fail_epoch("upstream write failed: #{reason}")
@@ -127,13 +135,13 @@ class MeshCoreTCPMux
       end
     end
 
-    def upstream_frame(payload : Bytes, now : Time::Span)
+    def upstream_frame(payload : Bytes, now : Time::Span) : Nil
       @now = now
       return if @failed
       return unless check_active_deadline(now)
       @counters[:upstream_frames] += 1
       Protocol.validate_response_shape!(payload)
-      if payload[0] >= 0x80
+      if payload[0] >= 0x80 # 0x80 starts the asynchronous push-code range.
         push(payload, now)
       else
         transaction_response(payload, now)
@@ -143,7 +151,8 @@ class MeshCoreTCPMux
       fail_epoch(ex.message || "invalid upstream response")
     end
 
-    def tick(now : Time::Span)
+    def tick(now : Time::Span) : Nil
+      # Expire client waits and radio reservations, enforce deadlines, and periodically check the physical inbox.
       @now = now
       return if @failed
       return unless check_active_deadline(now)
@@ -159,7 +168,7 @@ class MeshCoreTCPMux
         if sync = session.sync
           if now >= sync.deadline
             session.sync = nil
-            reject(session.id, 4_u8, "virtual sync deadline")
+            reject(session.id, 4_u8, "virtual sync deadline") # BAD_STATE.
           end
         end
       end
@@ -172,7 +181,8 @@ class MeshCoreTCPMux
       schedule(now)
     end
 
-    def fail_epoch(reason : String)
+    def fail_epoch(reason : String) : Nil
+      # Discard uncertain upstream ownership and disconnect all clients. Never replay a possibly executed command.
       return if @failed
       @failed = true
       @actions << Diagnostic.new("epoch=#{@epoch} failed reason=#{reason.inspect}")
@@ -183,7 +193,9 @@ class MeshCoreTCPMux
       @actions << EndEpoch.new(@epoch, reason)
     end
 
-    private def request_drain
+    private def request_drain : Nil
+      # Record new evidence that the physical inbox needs checking. Generations prevent an older empty
+      # reply from consuming a newer MSG_WAITING notification or client sync request.
       @drain_requested = true
       @notification_generation += 1
     end
@@ -200,7 +212,7 @@ class MeshCoreTCPMux
       true
     end
 
-    private def remove(id : Int64, reason : String, category = :normal)
+    private def remove(id : Int64, reason : String, category = :normal) : Nil
       return unless session = @sessions.delete(id)
       @counters[:disconnections] += 1
       @counters[:discarded_inbox_items] += session.inbox.size.to_u64
@@ -217,6 +229,8 @@ class MeshCoreTCPMux
     end
 
     private def emit(id : Int64, payload : Bytes) : Int64?
+      # Budget the three-byte TCP envelope as well as the payload, then request a downstream write.
+      # Return its ID for completion tracking, or nil when the client is gone or too slow.
       return nil unless session = @sessions[id]?
       size = payload.size + 3
       if session.writes.size >= @config.output_frames || session.output_bytes + size > @config.output_bytes
@@ -230,13 +244,16 @@ class MeshCoreTCPMux
       @next_write
     end
 
-    private def reject(id : Int64, reason : UInt8, detail : String)
+    private def reject(id : Int64, reason : UInt8, detail : String) : Nil
+      # Return native ERR (1) plus its reason byte; this rejection never goes upstream.
       @counters[:rejections] += 1
       @actions << Diagnostic.new("epoch=#{@epoch} session=#{id} rejection=#{reason} reason=#{detail.inspect}")
       emit(id, Bytes[1, reason])
     end
 
-    private def schedule(now : Time::Span)
+    private def schedule(now : Time::Span) : Nil
+      # Resolve locally virtualized commands first, respecting each client's FIFO, then rotate among
+      # clients and the internal inbox consumer. Only one ordinary upstream transaction may be active.
       return if @failed
       @now = now
       return if @active.try(&.maintenance)
@@ -251,8 +268,8 @@ class MeshCoreTCPMux
             reject(session.id, reason, "invalid command opcode=#{command.payload[0]}")
           elsif now - command.queued_at >= @config.command_age
             session.commands.shift
-            reject(session.id, 4_u8, "command queue age")
-          elsif command.payload[0] == 10
+            reject(session.id, 4_u8, "command queue age") # BAD_STATE.
+          elsif command.payload[0] == 10                  # 10 = SYNC_NEXT_MESSAGE.
             session.commands.shift
             if session.inbox.empty?
               session.sync = PendingSync.new(@pop_sequence + 1, now + 5.seconds)
@@ -261,18 +278,18 @@ class MeshCoreTCPMux
             else
               deliver_item(session)
             end
-          elsif command.payload[0] == 54
+          elsif command.payload[0] == 54 # 54 = SET_FLOOD_SCOPE_KEY.
             session.commands.shift
             session.scope = command.payload.dup
-            emit(session.id, Bytes[0])
-          elsif command.payload[0] == 23 && !@config.private_key_export
+            emit(session.id, Bytes[0])                                  # OK: virtual scope update accepted.
+          elsif command.payload[0] == 23 && !@config.private_key_export # 23 = EXPORT_PRIVATE_KEY.
             session.commands.shift
             @counters[:rejections] += 1
             @actions << Diagnostic.new("epoch=#{@epoch} session=#{session.id} command=export_private_key rejection=disabled")
-            emit(session.id, Bytes[0x0f])
-          elsif {24_u8, 51_u8}.includes?(command.payload[0]) && !@config.maintenance
+            emit(session.id, Bytes[0x0f])                                            # DISABLED: key export is not permitted.
+          elsif {24_u8, 51_u8}.includes?(command.payload[0]) && !@config.maintenance # IMPORT_PRIVATE_KEY, FACTORY_RESET.
             session.commands.shift
-            reject(session.id, 1_u8, "maintenance disabled")
+            reject(session.id, 1_u8, "maintenance disabled") # UNSUPPORTED_CMD.
           else
             break
           end
@@ -287,7 +304,7 @@ class MeshCoreTCPMux
           if @drain_requested && !@sessions.empty?
             @drain_requested = false
             @pop_sequence += 1
-            dispatch(0_i64, Bytes[10], now, @pop_sequence, @notification_generation)
+            dispatch(0_i64, Bytes[10], now, @pop_sequence, @notification_generation) # SYNC_NEXT_MESSAGE.
             return
           end
         elsif session = @sessions[id]?
@@ -302,7 +319,9 @@ class MeshCoreTCPMux
       end
     end
 
-    private def dispatch(owner : Int64, command : Bytes, now : Time::Span, pop_sequence = 0_i64, generation = 0_i64)
+    private def dispatch(owner : Int64, command : Bytes, now : Time::Span, pop_sequence = 0_i64, generation = 0_i64) : Nil
+      # Claim upstream ownership before sending anything. A nondefault client scope wraps the command
+      # in hidden SET_FLOOD_SCOPE_KEY (0x36) setup and default-scope restoration (mode 0, no key).
       descriptor = Protocol.descriptor(command).not_nil!
       transaction = Transaction.new(owner, command, descriptor, now, pop_sequence, generation)
       transaction.job_id = @next_write + 1
@@ -317,10 +336,11 @@ class MeshCoreTCPMux
       end
     end
 
-    private def send_command(transaction : Transaction, now : Time::Span)
+    private def send_command(transaction : Transaction, now : Time::Span) : Nil
+      # DEVICE_QUERY (22) is forwarded at our native target; the original client target stays in the transaction.
       transaction.step = :command
       command = transaction.command
-      forwarded = command[0] == 22 ? Protocol.normalize_device_query(command) : command
+      forwarded = command[0] == 22 ? Protocol.normalize_device_query(command) : command # 22 = DEVICE_QUERY.
       transaction.upstream_write_id = send_upstream(forwarded, now)
     end
 
@@ -333,25 +353,27 @@ class MeshCoreTCPMux
     end
 
     private def admit_command?(owner : Int64, command : Bytes, now : Time::Span) : Bool
+      # Apply permission and shared-radio-resource checks just before dispatch, not when commands are queued.
+      # Native rejection reasons are BAD_STATE (4) for conflicts and TABLE_FULL (3) for signing capacity.
       descriptor = Protocol.descriptor(command).not_nil!
       reason : UInt8? = nil
       # Reboot keeps the disruptive-operation lifecycle, but has no maintenance
       # permission, single-client, or idle-radio prerequisite.
-      if descriptor.flags.includes?(Protocol::CommandFlags::Maintenance) && command[0] != 19
+      if descriptor.flags.includes?(Protocol::CommandFlags::Maintenance) && command[0] != 19 # 19 = REBOOT.
         if @sessions.size != 1 || @remote.occupied?(now) || @dm_ring.pending_count(now) > 0 || @signing.occupied?(now)
-          reason = 4_u8
+          reason = 4_u8 # BAD_STATE: shared resource is unavailable.
         end
-      elsif command[0] == 2 && command[1] == 0 && !@dm_ring.available?(now)
-        reason = 4_u8
+      elsif command[0] == 2 && command[1] == 0 && !@dm_ring.available?(now) # SEND_TXT_MSG (2), plain text (type 0).
+        reason = 4_u8                                                       # BAD_STATE: shared resource is unavailable.
       elsif descriptor.flags.includes?(Protocol::CommandFlags::RemoteLease)
-        reason = 4_u8 unless @remote.reserve(owner, command, now)
-      elsif command[0] == 33
-        reason = 4_u8 unless @signing.start(owner, command, now)
-      elsif command[0] == 34
+        reason = 4_u8 unless @remote.reserve(owner, command, now) # BAD_STATE: shared resource is unavailable.
+      elsif command[0] == 33                                      # 33 = SIGN_START.
+        reason = 4_u8 unless @signing.start(owner, command, now)  # BAD_STATE: shared resource is unavailable.
+      elsif command[0] == 34                                      # 34 = SIGN_DATA.
         admission = @signing.begin_data(owner, command, now)
         reason = admission.table_full? ? 3_u8 : 4_u8 unless admission.allowed?
-      elsif command[0] == 35
-        reason = 4_u8 unless @signing.begin_finish(owner, command, now).allowed?
+      elsif command[0] == 35                                                     # 35 = SIGN_FINISH.
+        reason = 4_u8 unless @signing.begin_finish(owner, command, now).allowed? # BAD_STATE: shared resource is unavailable.
       end
       if reason
         reject(owner, reason, "resource unavailable opcode=#{command[0]}")
@@ -360,14 +382,16 @@ class MeshCoreTCPMux
       true
     end
 
-    private def scope_response(transaction : Transaction, payload : Bytes, now : Time::Span)
-      unless payload == Bytes[0] || (payload.size == 2 && payload[0] == 1)
+    private def scope_response(transaction : Transaction, payload : Bytes, now : Time::Span) : Nil
+      # Consume internal scope replies instead of exposing them to the client. OK (0) advances the wrapper;
+      # ERR (1) during setup rejects the command, while restoration failure makes shared state uncertain.
+      unless payload == Bytes[0] || (payload.size == 2 && payload[0] == 1) # 1 = ERR.
         raise Protocol::ProtocolError.new("unexpected internal scope response")
       end
       log_response(transaction, payload, now)
       transaction.progress = now
       if transaction.step == :setup
-        if payload[0] == 1
+        if payload[0] == 1 # 1 = ERR.
           @remote.rejected if transaction.descriptor.flags.includes?(Protocol::CommandFlags::RemoteLease)
           emit(transaction.owner, payload)
           finish_transaction(transaction)
@@ -375,33 +399,38 @@ class MeshCoreTCPMux
           send_command(transaction, now)
         end
       else
-        raise Protocol::ProtocolError.new("scope restoration rejected after command response") unless payload[0] == 0
+        raise Protocol::ProtocolError.new("scope restoration rejected after command response") unless payload[0] == 0 # 0 = OK.
         finish_transaction(transaction)
       end
     end
 
-    private def record_acceptance(transaction : Transaction, payload : Bytes, now : Time::Span)
+    private def record_acceptance(transaction : Transaction, payload : Bytes, now : Time::Span) : Nil
+      # A SENT (6) reply accepts a radio operation but does not prove delivery. Retain its radio reservation;
+      # signing commands instead update their incremental signing phase from the actual firmware reply.
       command = transaction.command
-      if command[0] == 2 && command[1] == 0 && payload[0] == 6
+      if command[0] == 2 && command[1] == 0 && payload[0] == 6 # SEND_TXT_MSG (2), plain text (type 0), accepted with SENT (6).
         @dm_ring.accepted(payload, now)
       elsif transaction.descriptor.flags.includes?(Protocol::CommandFlags::RemoteLease)
-        payload[0] == 6 ? @remote.accepted(payload, now) : @remote.rejected
-      elsif command[0] == 33
-        payload[0] == 0x13 ? @signing.accepted_start(payload, now) : @signing.rejected_start
-      elsif command[0] == 34
+        payload[0] == 6 ? @remote.accepted(payload, now) : @remote.rejected                  # 6 = SENT.
+      elsif command[0] == 33                                                                 # 33 = SIGN_START.
+        payload[0] == 0x13 ? @signing.accepted_start(payload, now) : @signing.rejected_start # 0x13 = SIGN_START.
+      elsif command[0] == 34                                                                 # 34 = SIGN_DATA.
         @signing.data_response(payload, now)
-      elsif command[0] == 35
+      elsif command[0] == 35 # 35 = SIGN_FINISH.
         @signing.finish_response(payload, now)
       end
     end
 
-    private def finish_transaction(transaction : Transaction)
+    private def finish_transaction(transaction : Transaction) : Nil
+      # Release ordinary response ownership. Disruptive operations end the whole connection epoch.
       @active = nil
       @signing.owner_gone(transaction.owner) unless @sessions.has_key?(transaction.owner)
       fail_epoch("maintenance operation completed") if transaction.maintenance
     end
 
-    private def transaction_response(payload : Bytes, now : Time::Span)
+    private def transaction_response(payload : Bytes, now : Time::Span) : Nil
+      # Keep each ordinary reply with its active owner, including when that client has disconnected.
+      # Contacts retain ownership until END; scoped commands retain it until hidden restoration succeeds.
       transaction = @active || raise Protocol::ProtocolError.new("ordinary response without owner")
       if write_id = transaction.upstream_write_id
         # A response proves the corresponding write completed even if the
@@ -415,15 +444,15 @@ class MeshCoreTCPMux
       end
       disposition = Protocol.validate_response!(transaction.descriptor, payload, transaction.command, phase: transaction.contacts_started ? 1 : 0)
       transaction.response_frames += 1
-      log_response(transaction, payload, now) if disposition.complete? && (transaction.owner != 0 || payload[0] != 10)
+      log_response(transaction, payload, now) if disposition.complete? && (transaction.owner != 0 || payload[0] != 10) # 10 = NO_MORE_MESSAGES.
       if transaction.owner == 0
-        raise Protocol::ProtocolError.new("internal inbox pop rejected") if payload[0] == 1
+        raise Protocol::ProtocolError.new("internal inbox pop rejected") if payload[0] == 1 # 1 = ERR.
         @active = nil
         pop_result(transaction, payload)
         return
       end
-      if transaction.descriptor.grammar.contacts? && payload[0] != 1
-        if payload[0] == 2
+      if transaction.descriptor.grammar.contacts? && payload[0] != 1 # 1 = ERR.
+        if payload[0] == 2                                           # 2 = CONTACTS_START.
           raise Protocol::ProtocolError.new("duplicate contacts start") if transaction.contacts_started
           transaction.contacts_started = true
         else
@@ -432,7 +461,7 @@ class MeshCoreTCPMux
       end
       response_write_id : Int64? = nil
       if session = @sessions[transaction.owner]?
-        if transaction.command[0] == 22 && payload[0] == 0x0d
+        if transaction.command[0] == 22 && payload[0] == 0x0d # 22 = DEVICE_QUERY; 0x0d = DEVICE_INFO.
           session.target_version = transaction.command[1]
         end
         response_write_id = emit(session.id, payload)
@@ -442,7 +471,7 @@ class MeshCoreTCPMux
         record_acceptance(transaction, payload, now)
         if transaction.scoped
           transaction.step = :restore
-          transaction.upstream_write_id = send_upstream(Bytes[0x36, 0], now)
+          transaction.upstream_write_id = send_upstream(Bytes[0x36, 0], now) # SET_FLOOD_SCOPE_KEY: restore default scope.
         elsif transaction.maintenance && response_write_id
           # Closing the endpoint in the same action batch can discard this
           # real firmware result. End the epoch only after its writer confirms.
@@ -454,7 +483,8 @@ class MeshCoreTCPMux
       end
     end
 
-    private def log_response(transaction : Transaction, payload : Bytes, now : Time::Span)
+    private def log_response(transaction : Transaction, payload : Bytes, now : Time::Span) : Nil
+      # Log routing and timing metadata only, excluding message bodies, keys, and identity fields.
       queued = @sessions[transaction.owner]?.try(&.commands.size) || 0
       @actions << Diagnostic.new("epoch=#{@epoch} session=#{transaction.owner} job=#{transaction.job_id} " \
                                  "command=#{transaction.descriptor.name} command_bytes=#{transaction.command.size} " \
@@ -462,15 +492,20 @@ class MeshCoreTCPMux
                                  "response_frames=#{transaction.response_frames} queued_commands=#{queued} elapsed_ms=#{(now - transaction.started).total_milliseconds.round(3)}")
     end
 
-    private def push(payload : Bytes, now : Time::Span)
+    private def push(payload : Bytes, now : Time::Span) : Nil
+      # MSG_WAITING requests a physical drain; SEND_CONFIRMED settles the DM ring and is broadcast.
+      # Remote result pushes go only to their lease owner. Self telemetry is exceptional: its push-shaped
+      # reply completes the active four-byte SEND_TELEMETRY_REQ (39), matched by the six-byte self-key prefix.
       case payload[0]
-      when 0x83
+      when 0x83 # MSG_WAITING.
         request_drain
-      when 0x82
+      when 0x82 # SEND_CONFIRMED.
         @dm_ring.confirm(payload)
         @sessions.keys.each { |id| emit(id, payload) }
       when 0x85, 0x86, 0x87, 0x89, 0x8b, 0x8c, 0x8d
-        if payload[0] == 0x8b && (transaction = @active) && transaction.command[0] == 39 && transaction.command.size == 4 && payload[2, 6] == @self_key[0, 6]
+        # LOGIN_SUCCESS, LOGIN_FAILURE, STATUS_RESPONSE, TRACE_DATA, TELEMETRY_RESPONSE, BINARY_RESPONSE,
+        # PATH_DISCOVERY_RESPONSE.
+        if payload[0] == 0x8b && (transaction = @active) && transaction.command[0] == 39 && transaction.command.size == 4 && payload[2, 6] == @self_key[0, 6] # 0x8b = TELEMETRY_RESPONSE; 39 = SEND_TELEMETRY_REQ.
           transaction_response(payload, now)
         elsif owner = @remote.match(payload, now)
           emit(owner, payload)
@@ -482,6 +517,8 @@ class MeshCoreTCPMux
           end
         end
       else
+        # Broadcast ADVERT (0x80), PATH_UPDATED (0x81), RAW_DATA (0x84), LOG_RX_DATA (0x88),
+        # NEW_ADVERT (0x8a), CONTROL_DATA (0x8e), CONTACT_DELETED (0x8f), and CONTACTS_FULL (0x90).
         unless {0x80_u8, 0x81_u8, 0x84_u8, 0x88_u8, 0x8a_u8, 0x8e_u8, 0x8f_u8, 0x90_u8}.includes?(payload[0])
           @counters[:unknown_pushes] += 1
           if !@last_unknown_log || now - @last_unknown_log.not_nil! >= 1.second
@@ -493,8 +530,10 @@ class MeshCoreTCPMux
       end
     end
 
-    private def pop_result(transaction : Transaction, payload : Bytes)
-      if payload[0] == 10
+    private def pop_result(transaction : Transaction, payload : Bytes) : Nil
+      # Turn one physical inbox result into independent client copies. NO_MORE_MESSAGES (10) only
+      # satisfies waits old enough to be covered by this pop; newer waits must survive.
+      if payload[0] == 10 # 10 = NO_MORE_MESSAGES.
         @sessions.values.each do |session|
           if (sync = session.sync) && sync.minimum_pop <= transaction.pop_sequence
             session.sync = nil
@@ -514,7 +553,9 @@ class MeshCoreTCPMux
       end
     end
 
-    private def fan_out(payload : Bytes)
+    private def fan_out(payload : Bytes) : Nil
+      # Share immutable inbox payloads across clients but maintain separate queue positions and budgets.
+      # An empty-to-nonempty transition sends MSG_WAITING (0x83), unless a waiting sync can receive immediately.
       @sessions.values.each do |session|
         if session.inbox.size >= @config.inbox_entries || session.inbox_bytes + payload.size > @config.inbox_bytes
           remove(session.id, "inbox overflow")
@@ -532,7 +573,8 @@ class MeshCoreTCPMux
       end
     end
 
-    private def deliver_item(session : Session)
+    private def deliver_item(session : Session) : Nil
+      # Remove a client's oldest inbox item only after successfully enqueueing its version-adjusted reply.
       item = session.inbox.first
       if emit(session.id, Protocol.downgrade_inbox(item, session.target_version))
         session.inbox.shift

@@ -16,7 +16,7 @@ private class GapHarness
   getter downstream = Hash(Int64, Array(Bytes)).new { |h, id| h[id] = [] of Bytes }
   property now = Time::Span.zero
 
-  def initialize(config = MeshCoreTCPMux::Config.new, ids = [1_i64, 2_i64])
+  def initialize(config = MeshCoreTCPMux::Config.new, ids = [1_i64, 2_i64]) : Nil
     # Synthetic 32-byte companion public key; identifies the epoch, never a real radio key.
     @broker = MeshCoreTCPMux::Broker.new(91_i64, Bytes.new(32, 0x77), config)
     ids.each { |id| @broker.admit(id, @now); flush }
@@ -31,22 +31,22 @@ private class GapHarness
     @downstream.clear
   end
 
-  def client(id : Int64, payload : Bytes)
+  def client(id : Int64, payload : Bytes) : Nil
     @broker.client_frame(id, payload, @now)
     flush
   end
 
-  def response(payload : Bytes)
+  def response(payload : Bytes) : Nil
     @broker.upstream_frame(payload, @now)
     flush
   end
 
-  def close(id : Int64)
+  def close(id : Int64) : Nil
     @broker.client_closed(id, @now)
     flush
   end
 
-  def flush
+  def flush : Nil
     loop do
       actions = @broker.take_actions
       break if actions.empty?
@@ -78,47 +78,47 @@ private def remote_vector(opcode : UInt8) : {Bytes, Bytes}
   # Synthetic six-byte peer public-key prefix 01..06; used only for routing matches.
   peer = Bytes[1_u8, 2_u8, 3_u8, 4_u8, 5_u8, 6_u8]
   command = case opcode
-            when 26_u8, 27_u8
+            when 26_u8, 27_u8 # SEND_LOGIN, SEND_STATUS_REQ.
               # LOGIN/STATUS request: opcode plus a zero-padded 32-byte key, with synthetic peer
               # prefix at offset 1.
               Bytes.new(33, 0_u8).tap { |p| p[0] = opcode; p[1, 6].copy_from(peer) }
-            when 36_u8
+            when 36_u8 # SEND_TRACE_PATH.
               # SEND_TRACE_PATH (36): four-byte tag, four-byte authentication value, flags 0
               # (one-byte hashes), then one path hash.
               Bytes[36_u8, 9_u8, 8_u8, 7_u8, 6_u8, 5_u8, 4_u8, 3_u8, 2_u8, 0_u8, 0xaa_u8]
-            when 39_u8
+            when 39_u8 # SEND_TELEMETRY_REQ.
               # Remote TELEMETRY: opcode, three zero option bytes, 32-byte key with peer prefix
               # at offset 4.
               Bytes.new(36, 0_u8).tap { |p| p[0] = opcode; p[4, 6].copy_from(peer) }
-            when 50_u8, 57_u8
+            when 50_u8, 57_u8 # SEND_BINARY_REQ, SEND_ANON_REQ.
               # BINARY/ANON request: opcode, 32-byte peer key, and one zero request byte.
               Bytes.new(34, 0_u8).tap { |p| p[0] = opcode; p[1, 6].copy_from(peer) }
-            when 52_u8
+            when 52_u8 # SEND_PATH_DISCOVERY_REQ.
               # PATH_DISCOVERY request: opcode, required reserved zero, then 32-byte peer key.
               Bytes.new(34, 0_u8).tap { |p| p[0] = opcode; p[2, 6].copy_from(peer) }
             else
               raise "unhandled remote opcode"
             end
   result = case opcode
-           when 26_u8
+           when 26_u8 # SEND_LOGIN.
              # LOGIN_SUCCESS (0x85), metadata byte 0, followed by the six-byte peer prefix.
              Bytes[0x85_u8, 0_u8] + peer
-           when 27_u8
+           when 27_u8 # SEND_STATUS_REQ.
              # STATUS_RESPONSE (0x87), metadata byte 0, peer prefix, and a status-result byte.
              # Trailing status-result byte (synthetic zero status data).
              Bytes[0x87_u8, 0_u8] + peer + Bytes[0_u8]
-           when 36_u8
+           when 36_u8 # SEND_TRACE_PATH.
              # TRACE_DATA (0x89): metadata/path fields, tag at bytes 4..7 and authentication at
              # 8..11; matching needs both.
              Bytes[0x89_u8, 0_u8, 0_u8, 0_u8, 9_u8, 8_u8, 7_u8, 6_u8,
                5_u8, 4_u8, 3_u8, 2_u8, 0_u8]
-           when 39_u8
+           when 39_u8 # SEND_TELEMETRY_REQ.
              # TELEMETRY_RESPONSE (0x8b), metadata byte 0, followed by six-byte peer prefix.
              Bytes[0x8b_u8, 0_u8] + peer
-           when 50_u8, 57_u8
+           when 50_u8, 57_u8 # SEND_BINARY_REQ, SEND_ANON_REQ.
              # BINARY_RESPONSE (0x8c), metadata byte 0 and four-byte SENT tag 1 2 3 4.
              Bytes[0x8c_u8, 0_u8, 1_u8, 2_u8, 3_u8, 4_u8]
-           when 52_u8
+           when 52_u8 # SEND_PATH_DISCOVERY_REQ.
              # PATH_DISCOVERY_RESPONSE (0x8d), metadata byte 0, peer prefix, then
              # outbound/inbound paths.
              # Empty outbound and inbound path lengths appended to PATH_DISCOVERY_RESPONSE.
@@ -280,11 +280,11 @@ describe "remaining design acceptance invariants" do
     {1_i64, 2_i64, 3_i64}.each do |id|
       # SYNC_NEXT_MESSAGE (10): pop the next inbox item.
       2.times { h.client(id, Bytes[10_u8]) }
-      h.downstream[id].select { |p| p[0] == 7 }.should eq([item, item])
+      h.downstream[id].select { |p| p[0] == 7 }.should eq([item, item]) # 7 = CONTACT_MESSAGE.
     end
     # SYNC_NEXT_MESSAGE (10): pop the next inbox item.
     h.client(4_i64, Bytes[10_u8])
-    h.downstream[4_i64].select { |p| p[0] == 7 }.should eq([item])
+    h.downstream[4_i64].select { |p| p[0] == 7 }.should eq([item]) # 7 = CONTACT_MESSAGE.
   end
 
   it "disconnects only a raw-push output consumer whose bounded writes are full" do
