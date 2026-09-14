@@ -1,8 +1,12 @@
 # meshcore-tcp-mux
 
-A small protocol-aware, N-to-1 TCP multiplexer for **connecting multiple TCP clients (such as meshcore-cli, meshcore-HA, bots, etc.)** to **one physical MeshCore companion**.
+A protocol-aware, N-to-1 multiplexing proxy for *correctly* connecting **multiple TCP clients (such as meshcore-cli, meshcore-HA, bots, etc.)** to **one physical TCP-accessible MeshCore companion**.
 
-It maintains one upstream TCP connection and accepts multiple downstream TCP connections using the existing companion wire protocol. This lets you share one physical MeshCore companion (or, for example, an OpenHop Repeater software companion) with multiple TCP clients, and allows them all to send and receive DMs and channel messages, list contacts, etc.
+-----
+
+## How it works
+
+`meshcore-tcp-mux` is a daemon which maintains one upstream TCP connection and accepts multiple downstream TCP connections using the existing companion wire protocol. This lets you share one physical MeshCore companion (or, for example, an OpenHop Repeater software companion) with multiple TCP clients, and allows them all to send and receive DMs and channel messages, list contacts, etc.
 
 The core is **a serialized command broker which connects upstream, plus a separate receive queue for each downstream connection**:
 
@@ -72,17 +76,17 @@ The "ports" line controls what gets bound and is accessible from *outside* the c
 3. Spin it up:
 
 ```
-    docker compose up -d
-    docker compose logs --follow
+docker compose up -d
+docker compose logs --follow
 
-    # Later, to turn it off:
-    docker compose down
+# Later, to turn it off:
+docker compose down
 ```
 
 4. Connect to it:
 
 ```
-    meshcore-cli -t 127.0.0.1 -p 5001
+meshcore-cli -t 127.0.0.1 -p 5001
 ```
 
 You should now be able to connect multiple clients to `127.0.0.1:5001` and have them all basically work simultaneously.

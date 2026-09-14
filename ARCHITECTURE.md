@@ -1,73 +1,160 @@
 # Architecture
 
-## Shared-device contract
+`meshcore-tcp-mux` lets several existing MeshCore companion clients share one
+physical companion over its native TCP protocol. It is a protocol-aware command
+broker, not a second companion implementation:
 
-The multiplexer must be the **only command producer**, including TCP, BLE, and
-USB. Native TCP replaces an existing client, and the firmware shares untagged
-responses across interfaces. A direct competing connection breaks ownership.
+- Client commands and firmware responses remain native binary payloads.
+- One upstream connection is shared by many independent downstream sessions.
+- Commands are serialized because ordinary responses such as `OK` and `ERR`
+  contain no request or client identifier.
+- Incoming messages are fetched once from the companion's destructive inbox and
+  copied into a private, bounded inbox for every connected session.
+- Shared physical state—identity, contacts, channels, configuration, and radio
+  capacity—is deliberately not virtualized.
 
-All clients share identity, contacts, channels, configuration, and radio
-capacity. Clients must serialize ambiguous command waits on each connection;
-the wire protocol cannot distinguish two concurrent generic `OK` waiters in
-one client. There is no contact cache, automatic clock setting, radio retry,
-synthetic send acknowledgement, or outgoing-message echo.
+The implemented compatibility profile is `native_v13`: protocol level 13 with
+payloads of at most 176 bytes. Its firmware reference is MeshCore commit
+`0679dbeffc504d562d2f09eb072fdc223f8ffc2a`; its client-behavior reference is
+`meshcore_py` commit `1bfd8385d5031a2d8b99aa8d69a31f6853bc35f0`.
 
-The broker fetches each physical inbox item once and copies it to all sessions
-present when that pop completes. Duplicate native items remain duplicates.
-A new connection has a new inbox; this is not durable history. When no clients
-are connected, backlog remains on the device. At most one pop already in flight
-can become a retained orphan item. Firmware queue overflow and a lost pop reply
-cannot be recovered by the proxy.
+## Implementation map
 
-Each session has bounded command, inbox, and output queues. A slow or malformed
-client is disconnected independently. There is deliberately no configured
-client-count cap. An uncertain upstream timeout, malformed response, or write
-failure closes every session in that epoch. Old commands are **never replayed**.
-Clients reconnect, initialize again, and decide what an uncertain operation
-means for their application.
+- [`BinaryEntrypoint`](src/meshcore_tcp_mux/binary_entrypoint.cr) parses runtime,
+  timeout, maintenance, and diagnostic-probe options. [`main.cr`](src/main.cr)
+  remains only the executable wrapper.
+- [`Runtime`](src/meshcore_tcp_mux/runtime.cr) owns the listener, socket
+  lifecycles, upstream epochs, reconnect policy, and execution of broker
+  actions. It is the only caller of `Broker`, which keeps protocol decisions in
+  one fiber without mutexes.
+- [`Transport::Endpoint`](src/meshcore_tcp_mux/transport.cr) gives each socket
+  one reader and one writer fiber. Bounded writer queues keep blocking I/O and
+  slow clients out of the broker.
+- [`FrameCodec`](src/meshcore_tcp_mux/frame_codec.cr) incrementally decodes the
+  `< length payload` client envelope and `> length payload` companion envelope.
+  It rejects wrong markers, empty or oversized frames, truncated frames, and
+  incomplete frames that exceed their assembly deadline.
+- [`Broker`](src/meshcore_tcp_mux/broker.cr) is the sole owner of command
+  scheduling, response ownership, inbox pumping, push routing, leases, output
+  budgets, and failure decisions. It produces typed `Action` values and performs
+  no I/O, making the state machine directly testable.
+- [`Session`](src/meshcore_tcp_mux/session.cr) holds one client's command FIFO,
+  virtual inbox, output budget, application-protocol target, pending sync, and
+  desired flood scope. Reconnecting creates a new session rather than resuming
+  durable history.
+- [`Protocol`](src/meshcore_tcp_mux/protocol.cr) contains the supported command
+  descriptors, payload validators, response grammars, logging descriptions,
+  V3-to-legacy inbox conversion, and startup payload builders. Centralizing this
+  table prevents routing from being inferred from whichever client sent most
+  recently.
+- [`DmRing`, `RemoteLease`, and `SigningLease`](src/meshcore_tcp_mux/leases.cr)
+  model firmware state that outlives one immediate command response. These
+  reservations prevent clients from overwriting the companion's finite or
+  single-owner transaction state.
+- [`Startup`](src/meshcore_tcp_mux/startup.cr) establishes a synchronization
+  fence, validates `native_v13`, captures the node identity, and restores the
+  default flood scope before `Runtime` admits clients.
+- [`Config`](src/meshcore_tcp_mux/config.cr) gathers queue bounds, deadlines,
+  polling intervals, and permissions. [`Clock`](src/meshcore_tcp_mux/config.cr)
+  supplies monotonic time so wall-clock changes cannot alter protocol deadlines.
 
-## Stateful operations and limitations
+## Command and response flow
 
-Remote operations retain one lease beyond their immediate `SENT` response.
-Signing retains one owner across chunks. Plain DMs protect the firmware's
-eight-slot acknowledgement ring. A conflict returns native `ERR(BAD_STATE)`;
-it does not fabricate a later radio failure or retry. Real DM confirmations
-are broadcast unchanged and must be matched by their native four-byte token.
-Channel `OK` means acceptance, not radio delivery.
+- A client endpoint decodes a complete command and sends it to `Runtime`.
+- `Runtime` passes the event to `Broker`, which validates and queues it on the
+  corresponding `Session`.
+- `Broker` schedules eligible session heads round-robin. At most one local
+  upstream transaction is active, including internal inbox commands and hidden
+  flood-scope setup or restoration.
+- The active `Broker::Transaction` records its owner and response grammar before
+  its write is exposed to the upstream writer. This handles a response arriving
+  before the write-completion event.
+- Ordinary responses are validated against that grammar and sent only to the
+  owner. Contacts remain owned through `END_OF_CONTACTS`; a stream cannot be
+  interleaved with another command.
+- Asynchronous pushes follow an explicit policy: shared observations are
+  broadcast, remote results go only to their lease owner, DM confirmations are
+  broadcast and release matching ring capacity, and `MSG_WAITING` wakes the
+  internal inbox pump.
+- Epoch, session, job, and write IDs make late asynchronous completions harmless
+  after a connection has been replaced.
 
-Each session has a virtual application protocol target and temporary flood
-scope. The upstream target stays at 13. Legacy clients receive the documented
-V3-to-legacy text downgrade, preserving the remaining bytes. A scoped send is
-wrapped in acknowledged physical setup and restoration without changing the
-original send. Autonomous firmware traffic can still observe a temporary
-scope while it is set; full isolation needs firmware support.
+Clients must still serialize ambiguous concurrent waits within their own TCP
+connection. The native protocol cannot tell two same-session waiters which
+generic `OK` belongs to which application coroutine.
 
-Some remote replies expose only a peer prefix. An old same-peer radio reply
-may be indistinguishable from a newer one even to firmware. Leases prevent
-concurrent overwrite, but do not invent causal identifiers or guarantee
-exactly-once radio delivery.
+## Virtual inbox
 
-Reboot is always allowed through normal command scheduling, even with multiple
-clients or pending radio/signing leases; it disconnects all clients when the
-companion restarts. Factory reset and private-key import are disabled by default.
-Explicit `--maintenance` allows those two operations only with one client and no
-pending radio/signing leases, and ends the epoch after the operation. Private-key
-export has a separate `--allow-private-key-export` flag. Logs use Crystal's
-standard `Log` facility and `LOG_LEVEL`; info records connection, command,
-response, push, routing, and lease lifecycles, while debug adds protocol-aware
-sanitized payloads. Private keys, passwords, channel and scope keys, device PINs,
-signing input, and custom-variable values never enter either form.
+The companion's `SYNC_NEXT_MESSAGE` command removes an item from one physical
+queue. Forwarding every client's sync command would divide messages between
+clients, so `Broker` is the sole upstream inbox consumer.
 
-## Implementation
+- `MSG_WAITING`, session admission, an empty client sync, or the fallback poll
+  requests an internal pop through the normal scheduler.
+- A returned message is stored as immutable bytes and fanned out to every
+  session present when the pop completes.
+- A downstream sync consumes one item from only that session's queue. The broker
+  returns `NO_MORE_MESSAGES` only after a qualifying upstream empty check, so a
+  stale empty observation cannot overtake an in-flight message.
+- An empty-to-nonempty transition emits one coalesced downstream `MSG_WAITING`
+  hint. Notifications are neither counts nor delivery acknowledgements.
+- Queue and output limits isolate a slow client by disconnecting that session.
+- With no sessions, the broker stops draining the companion. If the last client
+  leaves during a pop, at most one unfanned item is retained and reused only
+  when the next upstream epoch has the same node public key.
 
-`src/meshcore_tcp_mux/broker.cr` owns scheduling and protocol state. Readers and
-writers exchange typed events with `Runtime`; each socket has one writer.
-`Protocol` holds the command descriptors and field validators. `Startup`
-implements the native transport's five-self-info synchronization fence before
-client admission.
+This provides live fan-out, not durable history: new sessions do not receive
+items already distributed, and firmware queue overflow or a lost pop response
+cannot be recovered.
 
-The `native_v13` profile is based on MeshCore firmware commit
-`0679dbeffc504d562d2f09eb072fdc223f8ffc2a`, with 176-byte payloads. Its assumptions
-are not a compatibility claim for serial bridges, forks, or other virtual
-nodes. The design's Python reference is `meshcore_py` commit
-`1bfd8385d5031a2d8b99aa8d69a31f6853bc35f0`.
+## Stateful operations
+
+- Remote commands reserve `RemoteLease` beyond their immediate `SENT` response,
+  because the later radio result otherwise has no client identity. Same-peer
+  legacy replies can still be causally ambiguous; the mux does not invent tags.
+- Signing reserves `SigningLease` across start, data chunks, and finish so
+  another client cannot corrupt the shared signing operation.
+- Plain direct messages reserve the firmware's eight acknowledgement slots in
+  `DmRing`. Actual `SEND_CONFIRMED` frames are forwarded unchanged and matched
+  using their native four-byte token.
+- Application protocol targets and temporary flood scopes are per-session.
+  `Protocol` downgrades supported V3 inbox messages for legacy sessions, while
+  `Broker` wraps scoped sends in acknowledged setup and restoration commands.
+- Channel `OK` and direct-message `SENT` mean firmware acceptance, not radio
+  delivery. The mux never retries a radio send, changes its timestamp, creates
+  an outgoing-message echo, or fabricates a confirmation.
+
+Resource conflicts return native `ERR(BAD_STATE)` in the client's FIFO order.
+They do not block unrelated local queries or inbox work.
+
+## Failure and operational boundaries
+
+- Malformed or slow downstream clients are closed independently.
+- A malformed upstream frame, unexpected ordinary response, upstream write
+  failure, or uncertain response timeout ends the entire epoch. All sessions
+  disconnect and no possibly executed command is replayed.
+- `Runtime` reconnects with bounded exponential backoff and repeats the startup
+  fence before accepting new clients.
+- Reboot uses normal scheduling and ends when the companion disconnects.
+  Factory reset and private-key import require `--maintenance`, one client, and
+  no outstanding radio or signing lease. Private-key export separately requires
+  `--allow-private-key-export`.
+- Logging uses Crystal `Log` and `LOG_LEVEL`. Protocol-aware payload logging is
+  sanitized; private keys, passwords, channel and scope keys, PINs, signing
+  input, and custom-variable values are never logged.
+
+The mux must be the companion's **only command producer across TCP, BLE, and
+USB**. Another producer can inject untagged responses and make ownership
+unknowable. The implementation guarantees companion-interface isolation; it
+does not guarantee exactly-once radio delivery, durable receipt, independent
+physical configuration, or coordination between applications that all choose
+to respond to the same message.
+
+## Verification
+
+The specs exercise framing boundaries, scheduling and ownership, inbox fan-out,
+stateful leases, startup fencing, malformed traffic, timeouts, writer failures,
+maintenance policy, and protocol-aware logging. Support harnesses under
+[`spec/support/`](spec/support/) simulate the native companion and runtime TCP
+interactions; the design rationale and complete protocol inventory remain in
+[`design_docs/meshcore-tcp-multiplexer-design.md`](design_docs/meshcore-tcp-multiplexer-design.md).
