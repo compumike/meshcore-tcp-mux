@@ -1,0 +1,16 @@
+# Allowlist the build context: never send local environment files, cached/host
+# binaries, git history, or identifying live-test reports to a Docker builder.
+**
+!Dockerfile
+!Makefile
+!src/
+!src/**
+!spec/
+!spec/**
+!scripts/
+!scripts/check_fake_clients.py
+
+# Editor backups remain excluded even inside the allowed source directories.
+**/*~
+**/.*.swp
+**/__pycache__/

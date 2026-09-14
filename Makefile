@@ -4,7 +4,12 @@ CRYSTAL_CACHE_DIR := $(CURDIR)/.crystal-cache
 export CRYSTAL_CACHE_DIR
 
 CRYSTAL ?= crystal
+BUILD_FLAGS ?=
 PYTHON ?= python3
+DOCKER_IMAGE ?= compumike/meshcore-tcp-mux:latest
+DOCKER_PLATFORMS ?= linux/amd64,linux/arm64
+DOCKER_BUILDER ?=
+DOCKER_BUILDER_FLAG = $(if $(DOCKER_BUILDER),--builder $(DOCKER_BUILDER),)
 SOURCES := $(shell find src/ -type f -name '*.cr')
 SPECS := $(shell find spec/ -type f -name '*.cr')
 BINARY := out/meshcore-tcp-mux
@@ -13,7 +18,7 @@ all: $(BINARY)
 
 $(BINARY): $(SOURCES)
 	mkdir -p out
-	$(CRYSTAL) build -o $(BINARY) src/main.cr
+	$(CRYSTAL) build $(BUILD_FLAGS) -o $(BINARY) src/main.cr
 
 spec: $(SOURCES) $(SPECS)
 	$(CRYSTAL) spec --verbose
@@ -27,9 +32,22 @@ smoke: $(BINARY)
 
 ci: format-check all spec smoke
 
+# Builds and tests the host architecture, then loads it into local Docker.
+docker-build:
+	docker buildx build $(DOCKER_BUILDER_FLAG) --load --tag $(DOCKER_IMAGE) .
+
+# Linux Docker Engine only; uses a temporary bridge and no physical companion.
+docker-smoke:
+	$(PYTHON) scripts/check_docker.py --image $(DOCKER_IMAGE)
+
+# Explicit publication: the selected builder must support both architectures.
+# Both platforms run the Dockerfile's specs and fake-companion smoke test.
+docker-push:
+	docker buildx build $(DOCKER_BUILDER_FLAG) --platform $(DOCKER_PLATFORMS) --tag $(DOCKER_IMAGE) --push .
+
 clean:
 	rm -f $(BINARY)
 	# Explicitly write out the .crystal-cache directory name so that any assignment errors don't cause a too-broad rm call.
 	rm -rf .crystal-cache
 
-.PHONY: all spec format-check smoke ci clean
+.PHONY: all spec format-check smoke ci docker-build docker-smoke docker-push clean
