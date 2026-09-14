@@ -28,7 +28,7 @@ describe MeshCoreTCPMux::Startup do
     probes.size.should eq(6)
     # APP_START (1) followed by its seven required reserved zero bytes.
     probes.first[0, 8].should eq(Bytes[1, 0, 0, 0, 0, 0, 0, 0])
-    String.new(probes.first[8..]).should eq("meshcore-mux")
+    String.new(probes.first[8..]).should eq("meshcore-tcp-mux")
     # DEVICE_QUERY (22), requested protocol target 13.
     probes.last.should eq(Bytes[0x16, 13])
   end

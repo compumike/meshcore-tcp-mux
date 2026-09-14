@@ -25,7 +25,8 @@ class MeshCoreTCPMux
 
     def self.app_start : Bytes
       # Use the canonical APP_START layout, including its seven reserved bytes.
-      Protocol.app_start_payload("meshcore-mux")
+      # The trailing application name identifies this connection in firmware debug logs.
+      Protocol.app_start_payload("meshcore-tcp-mux")
     end
 
     def self.probes : Array(Bytes)
