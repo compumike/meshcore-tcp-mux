@@ -1,14 +1,20 @@
 # meshcore-tcp-mux
 
-A small, simple, protocol-aware, N-to-1 TCP multiplexer for **connecting multiple TCP clients (such as meshcore-cli, meshcore-HA, bots, etc.)** to **one physical MeshCore companion**. It maintains one upstream TCP connection and accepts multiple downstream TCP connections using the existing companion wire protocol.
+A small protocol-aware, N-to-1 TCP multiplexer for **connecting multiple TCP clients (such as meshcore-cli, meshcore-HA, bots, etc.)** to **one physical MeshCore companion**.
 
-This lets you share one physical MeshCore companion (or, for example, an OpenHop Repeater software companion) with multiple TCP clients, and allows them all to send and receive DMs and channel messages, list contacts, etc.
+It maintains one upstream TCP connection and accepts multiple downstream TCP connections using the existing companion wire protocol. This lets you share one physical MeshCore companion (or, for example, an OpenHop Repeater software companion) with multiple TCP clients, and allows them all to send and receive DMs and channel messages, list contacts, etc.
 
-The core is **a serialized command broker plus a virtual receive inbox for each downstream connection**. All clients share the physical node's identity, contacts, channels, radio settings, etc. They do **not** acquire independent mesh-visible companion identities. Changing node settings on one will change it on all (and may not be reflected properly on all clients until their connections are restarted).
+The core is **a serialized command broker which connects upstream, plus a separate receive queue for each downstream connection**:
 
-It has **no database**: this is a feature. It's just TCP in, TCP out.
+- All clients can transmit and receive messages, and they'll all appear to the mesh as if they're coming from a single companion node.
+- All clients share the physical node's identity, contacts, channels, radio settings, etc. They do **not** acquire independent mesh-visible companion identities.
+- Certain operations require brief two-way transactions at the protocol level. Due to the protocol (intended for a single client only), these operations may delay other clients for a few seconds, but the other clients will automatically make progress again as soon as the transaction completes.
 
-## ⚠️ WARNING: mostly vibe coded, beware! ⚠️
+See limitations below. The biggest limitation is that one client can't see the contents of the DM or channel messages sent by another client.
+
+`meshcore-tcp-mux` has **no database**: this is a feature. It's just TCP in, TCP out.
+
+### ⚠️ WARNING: this project is mostly "vibe coded," but with lots of test coverage, and it has been tested extensively against both simulated and real-world companion nodes. ⚠️
 
 -----
 
