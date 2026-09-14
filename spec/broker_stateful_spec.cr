@@ -16,6 +16,7 @@ private class StatefulHarness
   getter broker : MeshCoreTCPMux::Broker
   getter upstream = Deque(Bytes).new
   getter replies = Hash(Int64, Array(Bytes)).new { |h, k| h[k] = [] of Bytes }
+  getter diagnostics = [] of MeshCoreTCPMux::Diagnostic
   property now = Time::Span.zero
 
   def initialize(config = MeshCoreTCPMux::Config.new) : Nil
@@ -49,7 +50,9 @@ private class StatefulHarness
       actions = @broker.take_actions
       break if actions.empty?
       actions.each do |action|
-        if action.is_a?(MeshCoreTCPMux::SendFrame)
+        if action.is_a?(MeshCoreTCPMux::Diagnostic)
+          @diagnostics << action
+        elsif action.is_a?(MeshCoreTCPMux::SendFrame)
           if action.session == 0
             @upstream << action.payload
           else
@@ -98,9 +101,39 @@ describe "broker stateful operations" do
     h.broker.upstream_frame(secret, 1.millisecond)
     logs = h.broker.take_actions.compact_map(&.as?(MeshCoreTCPMux::Diagnostic)).map(&.message).join('\n')
     logs.should contain("command=export_private_key")
-    logs.should contain("response=private_key response_bytes=65")
+    logs.should contain("response=private_key code=0x0e response_bytes=65")
     logs.should contain("elapsed_ms=1.0")
     logs.should_not contain("S" * 64)
+  end
+
+  it "logs the complete remote status lease lifecycle including expiration" do
+    h = StatefulHarness.new
+    h.diagnostics.clear
+    peer = Bytes.new(32) { |i| (0x40 + i).to_u8 }
+    # SEND_STATUS_REQ (27): opcode plus the remote repeater's public key.
+    h.client(1, Bytes[27_u8] + peer)
+    h.upstream.shift.should eq(Bytes[27_u8] + peer)
+
+    received = h.diagnostics.map(&.message).join('\n')
+    received.should contain("event=command.received")
+    received.should contain("event=command.dispatched")
+    received.should contain("event=remote_lease.reserved")
+    received.should contain("peer=#{peer.hexstring}")
+
+    # SENT (0x06): type 1, token 0x12345678, and a 1000 ms radio timeout.
+    h.response(Bytes[6, 1, 0x78, 0x56, 0x34, 0x12, 0xe8, 0x03, 0, 0])
+    accepted = h.diagnostics.map(&.message).join('\n')
+    accepted.should contain("event=remote_lease.accepted")
+    accepted.should contain("token=305419896")
+    accepted.should contain("radio_timeout_ms=1000")
+
+    # LeaseTime retains the request for at least five seconds; no STATUS_RESPONSE
+    # arrived, so the next tick exposes that terminal outcome in the logs.
+    h.broker.tick(6.seconds)
+    expired = h.broker.take_actions.compact_map(&.as?(MeshCoreTCPMux::Diagnostic)).map(&.message).join('\n')
+    expired.should contain("event=remote_lease.expired")
+    expired.should contain("kind=status")
+    expired.should contain("peer=#{peer.hexstring}")
   end
 
   it "preserves signed, CLI, unknown text, and binary inbox bodies for both client versions" do

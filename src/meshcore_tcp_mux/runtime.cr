@@ -1,4 +1,5 @@
 require "socket"
+require "log"
 require "./broker"
 require "./config"
 require "./frame_codec"
@@ -11,6 +12,7 @@ class MeshCoreTCPMux
     # Owns the listener, upstream epochs, socket fibers, and Broker side effects.
     # The Broker is invoked only by this fiber.
     alias ConnectResult = TCPSocket | Exception
+    LOGGER = Log.for("meshcore_tcp_mux.runtime")
 
     @stopping = Channel(Nil).new
     @finished = Channel(Nil).new(1)
@@ -36,6 +38,7 @@ class MeshCoreTCPMux
       @running = true
       server = TCPServer.new(@config.listen_host, @config.listen_port)
       @server = server
+      LOGGER.info { "event=listener.started address=#{socket_address(server.local_address)} upstream=#{@host}:#{@port}" }
       start_acceptor(server)
       backoff = 500.milliseconds
 
@@ -43,7 +46,9 @@ class MeshCoreTCPMux
         socket = connect_upstream
         unless socket
           break if @stop_requested
-          wait_with_refusal(jitter(backoff))
+          delay = jitter(backoff)
+          LOGGER.info { "event=upstream.reconnect_scheduled remote=#{@host}:#{@port} delay_ms=#{delay.total_milliseconds.round}" }
+          wait_with_refusal(delay)
           backoff = {backoff * 2, 30.seconds}.min
           next
         end
@@ -67,13 +72,13 @@ class MeshCoreTCPMux
           orphan = orphan_for(self_key)
           broker = Broker.new(@next_epoch, self_key, @config, Clock.now, orphan)
           ready_at = Clock.now
-          STDERR.puts "runtime epoch=#{@next_epoch} ready #{startup.identification}"
+          LOGGER.info { "event=upstream.ready epoch=#{@next_epoch} remote=#{socket_address(socket.remote_address)} #{startup.identification}" }
           run_epoch(broker, endpoint, upstream_events)
           @orphan = broker.orphan.try(&.dup)
           @orphan_key = @orphan ? self_key : nil
           backoff = 500.milliseconds if Clock.now - ready_at >= 30.seconds
         rescue ex
-          STDERR.puts "runtime epoch=#{@next_epoch} error=#{(ex.message || ex.class.name).inspect}"
+          LOGGER.error(exception: ex) { "event=upstream.epoch_failed epoch=#{@next_epoch}" }
         ensure
           endpoint.stop
           @upstream = nil
@@ -81,7 +86,9 @@ class MeshCoreTCPMux
         end
 
         break if @stop_requested
-        wait_with_refusal(jitter(backoff))
+        delay = jitter(backoff)
+        LOGGER.info { "event=upstream.reconnect_scheduled remote=#{@host}:#{@port} delay_ms=#{delay.total_milliseconds.round}" }
+        wait_with_refusal(delay)
         backoff = {backoff * 2, 30.seconds}.min
       end
     ensure
@@ -93,12 +100,14 @@ class MeshCoreTCPMux
       @accept_done.receive if @server
       @server = nil
       @running = false
+      LOGGER.info { "event=runtime.stopped" }
       @finished.send(nil)
     end
 
     def stop : Nil
       # Stops only local I/O. It deliberately emits no radio command.
       return if @stop_requested
+      LOGGER.info { "event=runtime.stop_requested clients=#{@clients.size} epoch=#{@next_epoch}" }
       @stop_requested = true
       @stopping.close
       @server.try &.close
@@ -124,7 +133,7 @@ class MeshCoreTCPMux
             end
           end
         rescue ex : IO::Error
-          STDERR.puts "listener error=#{(ex.message || ex.class.name).inspect}" unless @stop_requested
+          LOGGER.error(exception: ex) { "event=listener.failed" } unless @stop_requested
         ensure
           @accept_done.send(nil)
         end
@@ -132,6 +141,7 @@ class MeshCoreTCPMux
     end
 
     private def connect_upstream : TCPSocket?
+      LOGGER.info { "event=upstream.connecting remote=#{@host}:#{@port}" }
       result = Channel(ConnectResult).new(1)
       done = Channel(Nil).new(1)
       spawn do
@@ -154,11 +164,15 @@ class MeshCoreTCPMux
             return nil
           end
           if connected.is_a?(Exception)
-            STDERR.puts "upstream connect error=#{(connected.message || connected.class.name).inspect}"
+            LOGGER.warn(exception: connected) { "event=upstream.connect_failed remote=#{@host}:#{@port}" }
             return nil
+          end
+          LOGGER.info do
+            "event=upstream.connected local=#{socket_address(connected.local_address)} remote=#{socket_address(connected.remote_address)}"
           end
           return connected
         when socket = @accepted.receive
+          LOGGER.info { "event=client.refused remote=#{socket_address(socket.remote_address)} reason=upstream_connecting" }
           socket.close
         when @stopping.receive?
           connected = result.receive
@@ -174,6 +188,7 @@ class MeshCoreTCPMux
       startup = Startup.new(Clock.now, @config.startup_timeout)
       Startup.probes.each_with_index do |payload, index|
         write = Transport::Write.new(epoch, -(index + 1).to_i64, payload)
+        LOGGER.debug { "event=upstream.startup_command epoch=#{epoch} write_id=#{write.write_id} #{Protocol.describe_command(payload, include_payload: true)}" }
         raise Startup::Error.new("startup writer queue full") unless endpoint.enqueue(write)
       end
 
@@ -182,8 +197,11 @@ class MeshCoreTCPMux
         when event = events.receive
           case event
           when Transport::Frame
+            LOGGER.debug { "event=upstream.startup_response epoch=#{epoch} #{Protocol.describe_response(event.payload, include_payload: true)}" }
             if command = startup.receive(event.payload, Clock.now)
-              raise Startup::Error.new("startup writer queue full") unless endpoint.enqueue(Transport::Write.new(epoch, -7_i64, command))
+              write = Transport::Write.new(epoch, -7_i64, command)
+              LOGGER.debug { "event=upstream.startup_command epoch=#{epoch} write_id=#{write.write_id} #{Protocol.describe_command(command, include_payload: true)}" }
+              raise Startup::Error.new("startup writer queue full") unless endpoint.enqueue(write)
             end
           when Transport::Closed
             raise Startup::Error.new("upstream closed: #{event.reason}")
@@ -193,6 +211,7 @@ class MeshCoreTCPMux
             # Receipt is useful only for failure detection during startup.
           end
         when socket = @accepted.receive
+          LOGGER.info { "event=client.refused remote=#{socket_address(socket.remote_address)} reason=upstream_starting epoch=#{epoch}" }
           socket.close
         when timeout(100.milliseconds)
           startup.check_deadline(Clock.now)
@@ -237,6 +256,10 @@ class MeshCoreTCPMux
     private def admit(socket : TCPSocket, broker : Broker, events : Channel(Transport::Event)) : Nil
       @next_session += 1
       id = @next_session
+      LOGGER.info do
+        "event=client.connected epoch=#{broker.epoch} session=#{id} " \
+        "local=#{socket_address(socket.local_address)} remote=#{socket_address(socket.remote_address)}"
+      end
       endpoint = Transport::Endpoint.new(
         socket, id,
         FrameCodec::CLIENT_TO_COMPANION_MARKER,
@@ -255,12 +278,16 @@ class MeshCoreTCPMux
       now = Clock.now
       case event
       when Transport::Frame
+        LOGGER.debug { "event=upstream.frame epoch=#{broker.epoch} #{Protocol.describe_response(event.payload, include_payload: true)}" }
         broker.upstream_frame(event.payload, now)
       when Transport::Closed
+        LOGGER.warn { "event=upstream.closed epoch=#{broker.epoch} reason=#{event.reason.inspect}" }
         broker.fail_epoch("upstream closed: #{event.reason}")
       when Transport::Written
+        LOGGER.debug { "event=upstream.write_completed epoch=#{event.epoch} write_id=#{event.write_id}" }
         broker.written(0_i64, event.epoch, event.write_id, now)
       when Transport::WriteFailed
+        LOGGER.error { "event=upstream.write_failed epoch=#{event.epoch} write_id=#{event.write_id} reason=#{event.reason.inspect}" }
         broker.write_failed(0_i64, event.epoch, event.reason, now)
       end
     end
@@ -269,12 +296,23 @@ class MeshCoreTCPMux
       now = Clock.now
       case event
       when Transport::Frame
+        LOGGER.debug { "event=client.frame epoch=#{broker.epoch} session=#{event.endpoint} #{Protocol.describe_command(event.payload, include_payload: true)}" }
         broker.client_frame(event.endpoint, event.payload, now)
       when Transport::Closed
+        remote = @clients[event.endpoint]?.try { |endpoint| socket_address(endpoint.socket.remote_address) } || "unknown"
+        LOGGER.info do
+          "event=client.disconnected epoch=#{broker.epoch} session=#{event.endpoint} " \
+          "remote=#{remote} reason=#{event.reason.inspect} category=#{event.category}"
+        end
         broker.client_closed(event.endpoint, now, event.reason, event.category)
       when Transport::Written
+        LOGGER.debug { "event=client.write_completed epoch=#{event.epoch} session=#{event.endpoint} write_id=#{event.write_id}" }
         broker.written(event.endpoint, event.epoch, event.write_id, now)
       when Transport::WriteFailed
+        LOGGER.warn do
+          "event=client.write_failed epoch=#{event.epoch} session=#{event.endpoint} " \
+          "write_id=#{event.write_id} reason=#{event.reason.inspect}"
+        end
         broker.write_failed(event.endpoint, event.epoch, event.reason, now)
       end
     end
@@ -313,17 +351,33 @@ class MeshCoreTCPMux
           return
         end
         @last_malformed_log = now
-        STDERR.puts "#{action.message} suppressed_since_last=#{@suppressed_malformed}"
+        LOGGER.warn { "#{action.message} suppressed_since_last=#{@suppressed_malformed}" }
         @suppressed_malformed = 0_u64
       else
-        STDERR.puts action.message
+        case action.category
+        when :debug
+          LOGGER.debug { action.message }
+        when :trace
+          LOGGER.trace { action.message }
+        when :warn
+          LOGGER.warn { action.message }
+        when :error
+          LOGGER.error { action.message }
+        else
+          LOGGER.info { action.message }
+        end
       end
     end
 
     private def close_all_clients : Nil
       clients = @clients
       @clients = Hash(Int64, Transport::Endpoint).new
-      clients.each_value(&.stop)
+      LOGGER.info { "event=clients.closing count=#{clients.size} epoch=#{@next_epoch}" } unless clients.empty?
+      clients.each do |id, endpoint|
+        remote = socket_address(endpoint.socket.remote_address) rescue "unknown"
+        LOGGER.info { "event=client.closed epoch=#{@next_epoch} session=#{id} remote=#{remote} reason=upstream_epoch_ended" }
+        endpoint.stop
+      end
     end
 
     private def orphan_for(self_key : Bytes) : Bytes?
@@ -336,7 +390,7 @@ class MeshCoreTCPMux
           return orphan
         end
       end
-      STDERR.puts "discarding orphan inbox item after upstream identity change"
+      LOGGER.warn { "event=inbox.orphan_discarded reason=upstream_identity_changed" }
       @orphan = nil
       @orphan_key = nil
       nil
@@ -349,6 +403,7 @@ class MeshCoreTCPMux
         return if remaining <= Time::Span.zero
         select
         when socket = @accepted.receive
+          LOGGER.info { "event=client.refused remote=#{socket_address(socket.remote_address)} reason=upstream_backoff" }
           socket.close
         when timeout(remaining)
           return
@@ -360,6 +415,12 @@ class MeshCoreTCPMux
 
     private def jitter(duration : Time::Span) : Time::Span
       duration * (0.8 + Random.rand * 0.4)
+    end
+
+    private def socket_address(address : Socket::Address) : String
+      # Socket address rendering is public transport metadata and is vital for
+      # distinguishing downstream clients and upstream reconnect attempts.
+      address.to_s
     end
   end
 end

@@ -10,12 +10,23 @@ It has **no database**: this is a feature. It's just TCP in, TCP out.
 
 ## ⚠️ WARNING: mostly vibe coded, beware! ⚠️
 
+-----
+
 ## Why is this needed?
 
-- The default MeshCore companion firmware (and similarly the OpenHop repeater software companion) only handles one TCP connection at a time.
-- [MeshMonitor Virtual Node](https://meshmonitor.org/configuration/virtual-node.html) has bugs.
-- [coresplitter](https://github.com/ogarcia/coresplitter) has bugs.
-- [meshcore_multitcp](https://github.com/do6uk/meshcore_multitcp) has bugs.
+The default MeshCore companion firmware (and similarly the OpenHop repeater software companion) only handles one TCP connection at a time.
+
+My goal was to run the [MeshCore-HA](https://github.com/meshcore-dev/meshcore-ha) Home Assistant integration on a companion presented by [openHop Repeater](https://github.com/openhop-dev/openhop_repeater), while still having access to use the same companion for other use, such as from mobile/desktop apps or [meshcore-cli](https://github.com/meshcore-dev/meshcore-cli). This would allow writing multiple bots independently.
+
+I looked into several other projects but found nothing that actually worked and was bug-free:
+- [MeshMonitor Virtual Node](https://meshmonitor.org/configuration/virtual-node.html)
+- [coresplitter](https://github.com/ogarcia/coresplitter)
+- [meshcore_multitcp](https://github.com/do6uk/meshcore_multitcp)
+- [meshcore_proxy](https://github.com/rgregg/meshcore-proxy/issues/10)
+
+TLDR: this one works.
+
+-----
 
 ## Docker Compose
 

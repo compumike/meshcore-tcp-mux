@@ -261,7 +261,9 @@ async def stderr_reader(
     while line := await stream.readline():
         text = line.decode(errors="replace").rstrip()
         tail.append(text)
-        if " ready profile=native_v13 " in text:
+        # Runtime readiness is an INFO event; stdout remains reserved for the
+        # smoke check's machine-readable result.
+        if "event=upstream.ready " in text:
             ready.set()
 
 

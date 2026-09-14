@@ -1,4 +1,5 @@
 require "option_parser"
+require "log"
 require "./upstream"
 require "./runtime"
 
@@ -8,6 +9,9 @@ class MeshCoreTCPMux
     # Parses command-line options and starts either the diagnostic probe or the mux runtime.
     # Keeps process setup and exit handling out of the protocol and broker classes.
     def initialize : Nil
+      # Preserve stdout for --probe's machine-readable result while allowing the
+      # standard LOG_LEVEL environment variable to select diagnostic verbosity.
+      Log.setup_from_env(backend: Log::IOBackend.new(STDERR))
       host : String? = nil
       port : Int32? = nil
       probe = false
@@ -41,7 +45,7 @@ class MeshCoreTCPMux
           runtime.run
         end
       rescue ex
-        STDERR.puts "meshcore-tcp-mux: #{ex.message}"
+        Log.for("meshcore_tcp_mux").error(exception: ex) { "process failed" }
         exit 1
       end
     end

@@ -193,7 +193,7 @@ describe MeshCoreTCPMux::Broker do
     first_pop = one(sends(broker.take_actions, 0_i64))
     # MSG_WAITING (0x83): inbox availability hint; fetch the actual body separately.
     broker.upstream_frame(Bytes[0x83_u8], 1.millisecond)
-    broker.take_actions.should be_empty
+    sends(broker.take_actions).should be_empty
     # NO_MORE_MESSAGES (0x0a): inbox empty.
     # This empty result belongs to the older pop. The intervening MSG_WAITING
     # hint still requires a new pop, even though this client can receive empty.
@@ -268,7 +268,7 @@ describe MeshCoreTCPMux::Broker do
     broker.take_actions
     # GET_DEVICE_TIME (5): local clock query.
     broker.client_frame(1_i64, Bytes[5_u8], Time::Span.zero)
-    broker.take_actions.should be_empty
+    sends(broker.take_actions).should be_empty
     broker.upstream_frame(v3_contact, 1.millisecond)
     # GET_DEVICE_TIME (5): local clock query.
     one(sends(broker.take_actions, 0_i64)).payload.should eq(Bytes[5_u8])

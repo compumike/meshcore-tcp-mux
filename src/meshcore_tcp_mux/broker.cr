@@ -78,6 +78,7 @@ class MeshCoreTCPMux
       @sessions[id] = Session.new(id)
       @counters[:connections] += 1
       @order << id
+      @actions << Diagnostic.new("event=session.admitted epoch=#{@epoch} session=#{id} sessions=#{@sessions.size}")
       if item = @orphan
         @orphan = nil
         fan_out(item)
@@ -92,6 +93,10 @@ class MeshCoreTCPMux
       return if @failed
       return unless session = @sessions[id]?
       @counters[:commands] += 1
+      @actions << Diagnostic.new("event=command.received epoch=#{@epoch} session=#{id} " \
+                                 "#{Protocol.describe_command(payload)} queued_commands=#{session.commands.size}")
+      @actions << Diagnostic.new("event=command.payload epoch=#{@epoch} session=#{id} " \
+                                 "#{Protocol.describe_command(payload, include_payload: true)}", :debug)
       if session.commands.size + (session.sync ? 1 : 0) + (@active.try(&.owner) == id ? 1 : 0) >= @config.command_limit
         remove(id, "command queue overflow")
       else
@@ -170,8 +175,20 @@ class MeshCoreTCPMux
           end
         end
       end
-      @remote.expire(now)
-      @signing.expire(now) unless @active.try(&.descriptor.flags.includes?(Protocol::CommandFlags::Signing))
+      if remote_command = @remote.command
+        owner = @remote.owner
+        kind = @remote.kind
+        if @remote.expire(now)
+          @actions << Diagnostic.new("event=remote_lease.expired epoch=#{@epoch} session=#{owner || "none"} " \
+                                     "kind=#{kind.to_s.underscore} #{Protocol.describe_command(remote_command)}")
+        end
+      end
+      unless @active.try(&.descriptor.flags.includes?(Protocol::CommandFlags::Signing))
+        signing_owner = @signing.owner
+        if @signing.expire(now)
+          @actions << Diagnostic.new("event=signing_lease.expired epoch=#{@epoch} session=#{signing_owner || "none"}")
+        end
+      end
       if !@sessions.empty? && now - @last_poll >= @config.poll_interval
         @last_poll = now
         request_drain
@@ -196,6 +213,7 @@ class MeshCoreTCPMux
       # reply from consuming a newer MSG_WAITING notification or client sync request.
       @drain_requested = true
       @notification_generation += 1
+      @actions << Diagnostic.new("event=inbox.drain_requested epoch=#{@epoch} generation=#{@notification_generation}", :debug)
     end
 
     private def check_active_deadline(now : Time::Span) : Bool
@@ -324,6 +342,10 @@ class MeshCoreTCPMux
       transaction.job_id = @next_write + 1
       @active = transaction
       transaction.maintenance = descriptor.flags.includes?(Protocol::CommandFlags::Maintenance)
+      @actions << Diagnostic.new("event=command.dispatched epoch=#{@epoch} session=#{owner} job=#{transaction.job_id} " \
+                                 "#{Protocol.describe_command(command)} scoped=#{descriptor.flags.includes?(Protocol::CommandFlags::ScopeSend)}")
+      @actions << Diagnostic.new("event=command.dispatched_payload epoch=#{@epoch} session=#{owner} job=#{transaction.job_id} " \
+                                 "#{Protocol.describe_command(command, include_payload: true)}", :debug)
       if (session = @sessions[owner]?) && descriptor.flags.includes?(Protocol::CommandFlags::ScopeSend) && session.scope != Bytes[0x36, 0]
         transaction.step = :setup
         transaction.scoped = true
@@ -363,10 +385,15 @@ class MeshCoreTCPMux
       elsif command[0] == 2 && command[1] == 0 && !@dm_ring.available?(now) # SEND_TXT_MSG (2), plain text (type 0).
         reason = 4_u8                                                       # BAD_STATE: shared resource is unavailable.
       elsif descriptor.flags.includes?(Protocol::CommandFlags::RemoteLease)
-        reason = 4_u8 unless @remote.reserve(owner, command, now) # BAD_STATE: shared resource is unavailable.
-      elsif command[0] == 33                                      # 33 = SIGN_START.
-        reason = 4_u8 unless @signing.start(owner, command, now)  # BAD_STATE: shared resource is unavailable.
-      elsif command[0] == 34                                      # 34 = SIGN_DATA.
+        if @remote.reserve(owner, command, now)
+          @actions << Diagnostic.new("event=remote_lease.reserved epoch=#{@epoch} session=#{owner} " \
+                                     "kind=#{@remote.kind.not_nil!.to_s.underscore} #{Protocol.describe_command(command)}")
+        else
+          reason = 4_u8 # BAD_STATE: shared resource is unavailable.
+        end
+      elsif command[0] == 33                                     # 33 = SIGN_START.
+        reason = 4_u8 unless @signing.start(owner, command, now) # BAD_STATE: shared resource is unavailable.
+      elsif command[0] == 34                                     # 34 = SIGN_DATA.
         admission = @signing.begin_data(owner, command, now)
         reason = admission.table_full? ? 3_u8 : 4_u8 unless admission.allowed?
       elsif command[0] == 35                                                     # 35 = SIGN_FINISH.
@@ -408,7 +435,15 @@ class MeshCoreTCPMux
       if command[0] == 2 && command[1] == 0 && payload[0] == 6 # SEND_TXT_MSG (2), plain text (type 0), accepted with SENT (6).
         @dm_ring.accepted(payload, now)
       elsif transaction.descriptor.flags.includes?(Protocol::CommandFlags::RemoteLease)
-        payload[0] == 6 ? @remote.accepted(payload, now) : @remote.rejected                  # 6 = SENT.
+        if payload[0] == 6 # SENT: the radio operation was accepted and now awaits its terminal push.
+          @remote.accepted(payload, now)
+          @actions << Diagnostic.new("event=remote_lease.accepted epoch=#{@epoch} session=#{transaction.owner} " \
+                                     "kind=#{@remote.kind.not_nil!.to_s.underscore} #{Protocol.describe_response(payload)}")
+        else
+          @remote.rejected
+          @actions << Diagnostic.new("event=remote_lease.rejected epoch=#{@epoch} session=#{transaction.owner} " \
+                                     "#{Protocol.describe_response(payload)}")
+        end
       elsif command[0] == 33                                                                 # 33 = SIGN_START.
         payload[0] == 0x13 ? @signing.accepted_start(payload, now) : @signing.rejected_start # 0x13 = SIGN_START.
       elsif command[0] == 34                                                                 # 34 = SIGN_DATA.
@@ -441,7 +476,7 @@ class MeshCoreTCPMux
       end
       disposition = Protocol.validate_response!(transaction.descriptor, payload, transaction.command, phase: transaction.contacts_started ? 1 : 0)
       transaction.response_frames += 1
-      log_response(transaction, payload, now) if disposition.complete? && (transaction.owner != 0 || payload[0] != 10) # 10 = NO_MORE_MESSAGES.
+      log_response(transaction, payload, now) if transaction.owner != 0 || payload[0] != 10 # 10 = NO_MORE_MESSAGES.
       if transaction.owner == 0
         raise Protocol::ProtocolError.new("internal inbox pop rejected") if payload[0] == 1 # 1 = ERR.
         @active = nil
@@ -481,12 +516,15 @@ class MeshCoreTCPMux
     end
 
     private def log_response(transaction : Transaction, payload : Bytes, now : Time::Span) : Nil
-      # Log routing and timing metadata only, excluding message bodies, keys, and identity fields.
+      # Log every response frame, not only the terminator of a multi-frame
+      # transaction. Protocol owns payload redaction for both summaries.
       queued = @sessions[transaction.owner]?.try(&.commands.size) || 0
-      @actions << Diagnostic.new("epoch=#{@epoch} session=#{transaction.owner} job=#{transaction.job_id} " \
+      @actions << Diagnostic.new("event=command.response epoch=#{@epoch} session=#{transaction.owner} job=#{transaction.job_id} " \
                                  "command=#{transaction.descriptor.name} command_bytes=#{transaction.command.size} " \
-                                 "step=#{transaction.step} response=#{Protocol.response_name(payload[0])} response_bytes=#{payload.size} " \
+                                 "step=#{transaction.step} #{Protocol.describe_response(payload)} " \
                                  "response_frames=#{transaction.response_frames} queued_commands=#{queued} elapsed_ms=#{(now - transaction.started).total_milliseconds.round(3)}")
+      @actions << Diagnostic.new("event=response.payload epoch=#{@epoch} session=#{transaction.owner} job=#{transaction.job_id} " \
+                                 "#{Protocol.describe_response(payload, include_payload: true)}", :debug)
     end
 
     private def push(payload : Bytes, now : Time::Span) : Nil
@@ -495,22 +533,37 @@ class MeshCoreTCPMux
       # reply completes the active four-byte SEND_TELEMETRY_REQ (39), matched by the six-byte self-key prefix.
       case payload[0]
       when 0x83 # MSG_WAITING.
+        @actions << Diagnostic.new("event=push.received epoch=#{@epoch} route=inbox_drain #{Protocol.describe_response(payload)}")
         request_drain
       when 0x82 # SEND_CONFIRMED.
-        @dm_ring.confirm(payload)
+        matched = @dm_ring.confirm(payload)
+        @actions << Diagnostic.new("event=push.received epoch=#{@epoch} route=broadcast matched=#{matched} " \
+                                   "sessions=#{@sessions.size} #{Protocol.describe_response(payload)}")
+        @actions << Diagnostic.new("event=push.payload epoch=#{@epoch} #{Protocol.describe_response(payload, include_payload: true)}", :debug)
         @sessions.keys.each { |id| emit(id, payload) }
       when 0x85, 0x86, 0x87, 0x89, 0x8b, 0x8c, 0x8d
         # LOGIN_SUCCESS, LOGIN_FAILURE, STATUS_RESPONSE, TRACE_DATA, TELEMETRY_RESPONSE, BINARY_RESPONSE,
         # PATH_DISCOVERY_RESPONSE.
         if payload[0] == 0x8b && (transaction = @active) && transaction.command[0] == 39 && transaction.command.size == 4 && payload[2, 6] == @self_key[0, 6] # 0x8b = TELEMETRY_RESPONSE; 39 = SEND_TELEMETRY_REQ.
           transaction_response(payload, now)
-        elsif owner = @remote.match(payload, now)
-          emit(owner, payload)
         else
-          @counters[:orphan_remote] += 1
-          if !@last_orphan_log || now - @last_orphan_log.not_nil! >= 1.second
-            @last_orphan_log = now
-            @actions << Diagnostic.new("epoch=#{@epoch} orphan_remote code=#{payload[0]} count=#{@counters[:orphan_remote]}")
+          lease_owner = @remote.owner
+          lease_kind = @remote.kind
+          owner = @remote.match(payload, now)
+          if owner
+            @actions << Diagnostic.new("event=push.received epoch=#{@epoch} route=lease session=#{owner} " \
+                                       "kind=#{lease_kind.try(&.to_s.underscore) || "none"} #{Protocol.describe_response(payload)}")
+            @actions << Diagnostic.new("event=push.payload epoch=#{@epoch} session=#{owner} " \
+                                       "#{Protocol.describe_response(payload, include_payload: true)}", :debug)
+            emit(owner, payload)
+          else
+            @counters[:orphan_remote] += 1
+            if !@last_orphan_log || now - @last_orphan_log.not_nil! >= 1.second
+              @last_orphan_log = now
+              @actions << Diagnostic.new("event=push.orphan_remote epoch=#{@epoch} expected_session=#{lease_owner || "none"} " \
+                                         "expected_kind=#{lease_kind.try(&.to_s.underscore) || "none"} " \
+                                         "#{Protocol.describe_response(payload)} count=#{@counters[:orphan_remote]}")
+            end
           end
         end
       else
@@ -523,6 +576,10 @@ class MeshCoreTCPMux
             @actions << Diagnostic.new("epoch=#{@epoch} unknown_push code=#{payload[0]} count=#{@counters[:unknown_pushes]}")
           end
         end
+        @actions << Diagnostic.new("event=push.received epoch=#{@epoch} route=broadcast sessions=#{@sessions.size} " \
+                                   "#{Protocol.describe_response(payload)}")
+        @actions << Diagnostic.new("event=push.payload epoch=#{@epoch} " \
+                                   "#{Protocol.describe_response(payload, include_payload: true)}", :debug)
         @sessions.keys.each { |id| emit(id, payload) }
       end
     end

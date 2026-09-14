@@ -15,6 +15,17 @@ direnv exec . out/meshcore-tcp-mux \
 Set `MESHCORE_UPSTREAM_HOST` to your companion's hostname or IP address before
 running the daemon.
 
+Logging uses Crystal's standard `Log` configuration. `LOG_LEVEL` defaults to
+`INFO`; set it to `DEBUG` to include protocol-aware hexadecimal payloads with
+private keys, passwords, channel and scope keys, device PINs, signing input, and
+custom-variable values redacted. Logs go to stderr so `--probe` keeps stdout
+machine-readable.
+
+```sh
+LOG_LEVEL=DEBUG direnv exec . out/meshcore-tcp-mux \
+  --upstream-host "$MESHCORE_UPSTREAM_HOST" --upstream-port 5000
+```
+
 The full local CI equivalent also runs real Python clients against an isolated
 fake companion (install `meshcore==2.3.9.1` and `meshcore-cli==1.6.3` in that
 Python environment):
@@ -54,6 +65,7 @@ after publishing or locally building the image:
 ```sh
 docker run -d \
   --name meshcore-tcp-mux \
+  -e LOG_LEVEL=DEBUG \
   --restart unless-stopped \
   --read-only \
   --cap-drop ALL \
@@ -83,9 +95,9 @@ docker run --rm compumike/meshcore-tcp-mux:latest --help
 ```
 
 CLI arguments are passed directly to the executable, including the existing
-SIGTERM shutdown handling. Environment variables are not read by the executable
-itself; the shell above (or Compose in `README.md`) supplies their values as
-arguments.
+SIGTERM shutdown handling. Apart from Crystal's standard `LOG_LEVEL`, runtime
+settings are supplied as arguments; the shell above (or Compose in `README.md`)
+expands deployment environment variables into those arguments.
 
 ### Building and publishing the image
 

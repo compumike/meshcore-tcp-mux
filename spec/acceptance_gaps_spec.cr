@@ -687,7 +687,7 @@ describe "remaining design acceptance invariants" do
     ])
   end
 
-  it "expires a remote lease silently and discards its late result" do
+  it "logs remote lease expiration and discards its late result" do
     h = GapHarness.new
     status, result = remote_vector(27_u8)
     h.client(1_i64, status)

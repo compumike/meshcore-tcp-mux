@@ -52,9 +52,11 @@ clients or pending radio/signing leases; it disconnects all clients when the
 companion restarts. Factory reset and private-key import are disabled by default.
 Explicit `--maintenance` allows those two operations only with one client and no
 pending radio/signing leases, and ends the epoch after the operation. Private-key
-export has a separate `--allow-private-key-export` flag. Default logs contain
-metadata, queue counts, and public firmware identification, not payloads or
-secrets.
+export has a separate `--allow-private-key-export` flag. Logs use Crystal's
+standard `Log` facility and `LOG_LEVEL`; info records connection, command,
+response, push, routing, and lease lifecycles, while debug adds protocol-aware
+sanitized payloads. Private keys, passwords, channel and scope keys, device PINs,
+signing input, and custom-variable values never enter either form.
 
 ## Implementation
 

@@ -11,7 +11,7 @@ class MeshCoreTCPMux
     ERR_UNSUPPORTED_CMD = 1_u8
     ERR_ILLEGAL_ARG     = 6_u8
 
-    # Ordinary response names are in wire-code order; payloads never enter logs.
+    # Ordinary response names are in wire-code order; unsanitized payloads never enter logs.
     RESPONSE_NAMES = %w(ok err contacts_start contact end_of_contacts self_info
       sent contact_message channel_message current_time no_more_messages
       export_contact battery_and_storage device_info private_key disabled
@@ -20,8 +20,161 @@ class MeshCoreTCPMux
       channel_data default_flood_scope)
 
     def self.response_name(code : UInt8) : String
-      # Return a safe diagnostic label, never payload contents. 0x8b is TELEMETRY_RESPONSE.
-      RESPONSE_NAMES[code]? || (code == 0x8b ? "telemetry_response" : "push_#{code}")
+      # Return a safe diagnostic label, never payload contents. Ordinary replies
+      # occupy the low codes; asynchronous pushes use the named 0x80..0x90 range.
+      RESPONSE_NAMES[code]? || case code
+      when 0x80 then "advert"
+      when 0x81 then "path_updated"
+      when 0x82 then "send_confirmed"
+      when 0x83 then "msg_waiting"
+      when 0x84 then "raw_data"
+      when 0x85 then "login_success"
+      when 0x86 then "login_failure"
+      when 0x87 then "status_response"
+      when 0x88 then "log_rx_data"
+      when 0x89 then "trace_data"
+      when 0x8a then "new_advert"
+      when 0x8b then "telemetry_response"
+      when 0x8c then "binary_response"
+      when 0x8d then "path_discovery_response"
+      when 0x8e then "control_data"
+      when 0x8f then "contact_deleted"
+      when 0x90 then "contacts_full"
+      else           "push_#{code}"
+      end
+    end
+
+    def self.describe_command(payload : Bytes, include_payload = false) : String
+      # Produce the only representation of a client command that may enter logs.
+      # Public routing identities remain visible, while credentials, private keys,
+      # channel/scope keys, device PINs, signing bytes, and custom-variable values
+      # are replaced byte-for-byte so a later caller cannot accidentally dump them.
+      descriptor = descriptor(payload)
+      name = descriptor.try(&.name) || :unknown
+      summary = "command=#{name} opcode=#{hex_byte(payload[0]?)} command_bytes=#{payload.size}"
+      if peer = command_peer(payload)
+        summary += " peer=#{hex(peer)}"
+      end
+      if include_payload
+        summary += descriptor ? " payload=#{redacted_hex(payload, command_redactions(payload))}" : " payload=<redacted-unknown-command>"
+      end
+      summary
+    end
+
+    def self.describe_response(payload : Bytes, include_payload = false) : String
+      # Summarize ordinary responses and asynchronous pushes without exposing
+      # response-side key material or the device PIN embedded in DEVICE_INFO.
+      return "response=empty response_bytes=0" if payload.empty?
+      summary = "response=#{response_name(payload[0])} code=#{hex_byte(payload[0])} response_bytes=#{payload.size}"
+      if payload[0] == 0x06 && payload.size >= 10 # SENT: type, u32 token, u32 radio timeout.
+        summary += " token=#{read_u32(payload, 2)} radio_timeout_ms=#{read_u32(payload, 6)}"
+      elsif {0x85_u8, 0x86_u8, 0x87_u8, 0x8b_u8, 0x8d_u8}.includes?(payload[0]) && payload.size >= 8
+        # LOGIN_SUCCESS/FAILURE, STATUS, TELEMETRY, and PATH_DISCOVERY identify
+        # the public peer by its six-byte key prefix at response offsets 2..7.
+        summary += " peer=#{hex(payload[2, 6])}"
+      elsif payload[0] == 0x82 && payload.size >= 9 # SEND_CONFIRMED: token and round-trip milliseconds.
+        summary += " token=#{read_u32(payload, 1)} round_trip_ms=#{read_u32(payload, 5)}"
+      end
+      if include_payload
+        known = payload[0] < 0x80 || {
+          0x80_u8, 0x81_u8, 0x82_u8, 0x83_u8, 0x84_u8, 0x85_u8, 0x86_u8,
+          0x87_u8, 0x88_u8, 0x89_u8, 0x8a_u8, 0x8b_u8, 0x8c_u8, 0x8d_u8,
+          0x8e_u8, 0x8f_u8, 0x90_u8,
+        }.includes?(payload[0])
+        summary += known ? " payload=#{redacted_hex(payload, response_redactions(payload))}" : " payload=<redacted-unknown-push>"
+      end
+      summary
+    end
+
+    def self.hex(bytes : Bytes) : String
+      # Render public identifiers, paths, tags, and other non-secret bytes in a
+      # stable form suitable for correlating mux logs with companion logs.
+      String.build(bytes.size * 2) do |io|
+        bytes.each { |byte| io << byte.to_s(16).rjust(2, '0') }
+      end
+    end
+
+    private def self.hex_byte(byte : UInt8?) : String
+      byte ? "0x#{byte.to_s(16).rjust(2, '0')}" : "none"
+    end
+
+    private def self.read_u32(payload : Bytes, offset : Int32) : UInt32
+      payload[offset].to_u32 |
+        (payload[offset + 1].to_u32 << 8) |
+        (payload[offset + 2].to_u32 << 16) |
+        (payload[offset + 3].to_u32 << 24)
+    end
+
+    private def self.command_peer(payload : Bytes) : Bytes?
+      return nil if payload.empty?
+      offset = case payload[0]
+               when 13, 15, 16, 26, 27, 28, 29, 30, 50, 57
+                 1
+               when 39
+                 payload.size >= 36 ? 4 : nil
+               when 52
+                 2
+               end
+      return nil unless offset && payload.size >= offset + 6
+      payload[offset, Math.min(32, payload.size - offset)]
+    end
+
+    private def self.command_redactions(payload : Bytes) : Array(Range(Int32, Int32))
+      return [] of Range(Int32, Int32) if payload.empty?
+      case payload[0]
+      when 24 # IMPORT_PRIVATE_KEY: all 64 private-key bytes.
+        [1..(payload.size - 1)]
+      when 26 # SEND_LOGIN: public destination key followed by the login password.
+        payload.size > 33 ? [33..(payload.size - 1)] : [] of Range(Int32, Int32)
+      when 32 # SET_CHANNEL: opcode, index, public name, then 16–31 secret bytes.
+        payload.size > 34 ? [34..(payload.size - 1)] : [] of Range(Int32, Int32)
+      when 34 # SIGN_DATA can contain arbitrary application-secret input.
+        payload.size > 1 ? [1..(payload.size - 1)] : [] of Range(Int32, Int32)
+      when 37 # SET_DEVICE_PIN: four-byte PIN.
+        payload.size > 1 ? [1..(payload.size - 1)] : [] of Range(Int32, Int32)
+      when 41 # SET_CUSTOM_VAR: retain the variable name, redact its value after ':'.
+        if separator = payload.index(':'.ord.to_u8)
+          separator + 1 < payload.size ? [(separator + 1)..(payload.size - 1)] : [] of Range(Int32, Int32)
+        else
+          [] of Range(Int32, Int32)
+        end
+      when 54 # SET_FLOOD_SCOPE_KEY: opcode and mode precede an optional key.
+        payload.size > 2 ? [2..(payload.size - 1)] : [] of Range(Int32, Int32)
+      when 63 # SET_DEFAULT_FLOOD_SCOPE: opcode and 31-byte public name precede its key.
+        payload.size > 32 ? [32..(payload.size - 1)] : [] of Range(Int32, Int32)
+      else
+        [] of Range(Int32, Int32)
+      end
+    end
+
+    private def self.response_redactions(payload : Bytes) : Array(Range(Int32, Int32))
+      return [] of Range(Int32, Int32) if payload.empty?
+      case payload[0]
+      when 0x0d # DEVICE_INFO: bytes 4..7 contain the device PIN.
+        payload.size >= 8 ? [4..7] : [] of Range(Int32, Int32)
+      when 0x0e # PRIVATE_KEY: all bytes after the response code are secret.
+        payload.size > 1 ? [1..(payload.size - 1)] : [] of Range(Int32, Int32)
+      when 0x12 # CHANNEL_INFO: code, index, 32-byte name, then the channel key.
+        payload.size > 34 ? [34..(payload.size - 1)] : [] of Range(Int32, Int32)
+      when 0x15 # CUSTOM_VARS may contain arbitrary configuration secrets.
+        payload.size > 1 ? [1..(payload.size - 1)] : [] of Range(Int32, Int32)
+      when 0x1c # DEFAULT_FLOOD_SCOPE: code and 31-byte public name precede its key.
+        payload.size > 32 ? [32..(payload.size - 1)] : [] of Range(Int32, Int32)
+      else
+        [] of Range(Int32, Int32)
+      end
+    end
+
+    private def self.redacted_hex(payload : Bytes, ranges : Array(Range(Int32, Int32))) : String
+      String.build(payload.size * 2) do |io|
+        payload.each_with_index do |byte, index|
+          if ranges.any?(&.includes?(index))
+            io << "xx"
+          else
+            io << byte.to_s(16).rjust(2, '0')
+          end
+        end
+      end
     end
 
     enum Grammar
