@@ -31,8 +31,25 @@ class MeshCoreTCPMux
     # unobservable operation to finish without being overwritten after reconnect.
     property radio_uncertainty_timeout = 60.seconds
     property poll_interval = 5.seconds
-    property maintenance = false
-    property private_key_export = false
+    # Match a directly connected companion by default. Deployments that expose
+    # the mux to clients which should not control identity state can reject each
+    # sensitive operation independently through the corresponding CLI flag.
+    property private_key_export = true
+    property private_key_import = true
+    property factory_reset = true
+
+    def maintenance : Bool
+      # Preserve the former combined programmatic policy for callers and specs
+      # while new code uses the granular import/reset settings.
+      @private_key_import && @factory_reset
+    end
+
+    def maintenance=(allowed : Bool) : Bool
+      # The legacy setter intentionally changes both operations together.
+      @private_key_import = allowed
+      @factory_reset = allowed
+      allowed
+    end
 
     def validate! : Nil
       # Reject settings that cannot provide finite, positive resource deadlines.

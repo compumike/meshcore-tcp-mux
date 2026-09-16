@@ -198,14 +198,17 @@ describe MeshCoreTCPMux::Broker, "pre-release ownership regressions" do
   it "does not overwrite a live physical ACK slot after unknown DM acceptance" do
     # Start with a full, aligned physical/local ring. Token 1 is then confirmed,
     # making the shared next slot reusable while token 2 remains live. The
-    # 120-second fixture is a valid u32 native timeout and remains protected by
-    # the mux until 151 seconds (1.25x plus one second).
+    # Token 2's 120-second fixture remains protected until 151 seconds, while
+    # the other live entries use an 8-second timeout and expire at 11 seconds.
+    # Different deadlines make it unsafe to treat the ring as wholly expired at
+    # the fixed 60-second uncertainty boundary.
     physical = PersistentAckRingModel.new
     radio = MeshCoreTCPMux::CompanionRadioState.new
     8.times do |offset|
       token = (offset + 1).to_u32
       physical.accept(token).should eq(0_u32)
-      radio.dm_ring.accepted(prerelease_sent(token, 120_000_u32), Time::Span.zero)
+      timeout_ms = token == 2_u32 ? 120_000_u32 : 8_000_u32
+      radio.dm_ring.accepted(prerelease_sent(token, timeout_ms), Time::Span.zero)
     end
     physical.confirm(1_u32)
     radio.dm_ring.confirm(prerelease_confirmed(1_u32)).should be_true
@@ -244,5 +247,55 @@ describe MeshCoreTCPMux::Broker, "pre-release ownership regressions" do
     successor_upstream = prerelease_sends(second.take_actions, 0_i64)
     overwritten = successor_upstream.empty? ? 0_u32 : physical.accept(10_u32)
     overwritten.should eq(0_u32)
+
+    # Once every old 151-second reservation has expired, either possible
+    # physical cursor is safe. The successor may resume relative tracking even
+    # though the independent model shows the unseen insertion really occurred.
+    second.client_frame(41_i64, prerelease_dm(11_u8), 151.seconds)
+    prerelease_sends(second.take_actions, 0_i64).size.should eq(1)
+    physical.accept(11_u32).should eq(2_u32) # Token 2 is now expired and safe to replace.
+  end
+
+  it "recovers safely when the unknown DM was not physically accepted" do
+    physical = PersistentAckRingModel.new
+    radio = MeshCoreTCPMux::CompanionRadioState.new
+    8.times do |offset|
+      token = (offset + 1).to_u32
+      physical.accept(token).should eq(0_u32)
+      timeout_ms = token == 2_u32 ? 120_000_u32 : 8_000_u32
+      radio.dm_ring.accepted(prerelease_sent(token, timeout_ms), Time::Span.zero)
+    end
+    physical.confirm(1_u32)
+    radio.dm_ring.confirm(prerelease_confirmed(1_u32)).should be_true
+
+    first = MeshCoreTCPMux::Broker.new(
+      106_i64, Bytes.new(32, 0x55_u8), radio_state: radio
+    )
+    first.admit(42_i64, Time::Span.zero)
+    first_hint = prerelease_sends(first.take_actions, 42_i64).first
+    first.written(42_i64, first_hint.epoch, first_hint.write_id, Time::Span.zero)
+    first.take_actions
+    first.client_frame(42_i64, prerelease_dm(12_u8), Time::Span.zero)
+    prerelease_sends(first.take_actions, 0_i64).size.should eq(1)
+    # This branch models TCP failing before firmware accepts the complete write:
+    # do not advance the independent physical cursor.
+    first.fail_epoch("synthetic disconnect before physical acceptance")
+    first.take_actions
+
+    second = MeshCoreTCPMux::Broker.new(
+      107_i64, Bytes.new(32, 0x55_u8), now: 60.seconds, radio_state: radio
+    )
+    second.admit(43_i64, 60.seconds)
+    second_hint = prerelease_sends(second.take_actions, 43_i64).first
+    second.written(43_i64, second_hint.epoch, second_hint.write_id, 60.seconds)
+    second.take_actions
+    second.client_frame(43_i64, prerelease_dm(13_u8), 60.seconds)
+    prerelease_sends(second.take_actions, 0_i64).should be_empty
+
+    # Waiting out every old reservation is conservative in this no-acceptance
+    # branch, but it leaves the original physical next slot empty and safe.
+    second.client_frame(43_i64, prerelease_dm(14_u8), 151.seconds)
+    prerelease_sends(second.take_actions, 0_i64).size.should eq(1)
+    physical.accept(14_u32).should eq(0_u32)
   end
 end

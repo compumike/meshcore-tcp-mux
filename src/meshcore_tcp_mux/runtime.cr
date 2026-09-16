@@ -6,6 +6,7 @@ require "./dedicated_client_slot"
 require "./frame_codec"
 require "./startup"
 require "./transport"
+require "./wire_log"
 
 class MeshCoreTCPMux
   # Namespace for the TCP multiplexer: transport, protocol validation, and per-client state.
@@ -24,6 +25,7 @@ class MeshCoreTCPMux
 
     record ListenerBinding, server : TCPServer, kind : ListenerKind, dedicated_slot_id : Int32?
     record AcceptedSocket, socket : TCPSocket, kind : ListenerKind, dedicated_slot_id : Int32?
+    record ClientRoute, kind : ListenerKind, dedicated_slot_id : Int32?
 
     @stopping = Channel(Nil).new
     @finished = Channel(Nil).new(1)
@@ -35,6 +37,7 @@ class MeshCoreTCPMux
     @listeners = Array(ListenerBinding).new
     @upstream : Transport::Endpoint? = nil
     @clients = Hash(Int64, Transport::Endpoint).new
+    @client_routes = Hash(Int64, ClientRoute).new
     @next_session = 0_i64
     @next_epoch = 0_i64
     @orphan : Bytes? = nil
@@ -272,7 +275,7 @@ class MeshCoreTCPMux
       startup = Startup.new(Clock.now, @config.startup_timeout)
       Startup.probes.each_with_index do |payload, index|
         write = Transport::Write.new(epoch, -(index + 1).to_i64, payload)
-        LOGGER.debug { "event=upstream.startup_command epoch=#{epoch} write_id=#{write.write_id} #{Protocol.describe_command(payload, include_payload: true)}" }
+        LOGGER.info { WireLog.upstream(epoch, :tx, payload) }
         raise Startup::Error.new("startup writer queue full") unless endpoint.enqueue(write)
       end
 
@@ -281,10 +284,10 @@ class MeshCoreTCPMux
         when event = events.receive
           case event
           when Transport::Frame
-            LOGGER.debug { "event=upstream.startup_response epoch=#{epoch} #{Protocol.describe_response(event.payload, include_payload: true)}" }
+            LOGGER.info { WireLog.upstream(epoch, :rx, event.payload) }
             if command = startup.receive(event.payload, Clock.now)
               write = Transport::Write.new(epoch, -7_i64, command)
-              LOGGER.debug { "event=upstream.startup_command epoch=#{epoch} write_id=#{write.write_id} #{Protocol.describe_command(command, include_payload: true)}" }
+              LOGGER.info { WireLog.upstream(epoch, :tx, command) }
               raise Startup::Error.new("startup writer queue full") unless endpoint.enqueue(write)
             end
           when Transport::Closed
@@ -359,6 +362,7 @@ class MeshCoreTCPMux
         @config.output_frames
       )
       @clients[id] = endpoint
+      @client_routes[id] = ClientRoute.new(accepted.kind, accepted.dedicated_slot_id)
       endpoint.start
       broker.admit(id, Clock.now, accepted.dedicated_slot_id)
     end
@@ -367,11 +371,7 @@ class MeshCoreTCPMux
       now = Clock.now
       case event
       when Transport::Frame
-        # Unknown pushes use Broker's complete rate-limited diagnostic path;
-        # logging them here too would restore one debug record per frame.
-        if Protocol.known_response?(event.payload[0])
-          LOGGER.debug { "event=upstream.frame epoch=#{broker.epoch} #{Protocol.describe_response(event.payload, include_payload: true)}" }
-        end
+        LOGGER.info { WireLog.upstream(broker.epoch, :rx, event.payload) }
         broker.upstream_frame(event.payload, now)
       when Transport::Closed
         LOGGER.warn { "event=upstream.closed epoch=#{broker.epoch} reason=#{event.reason.inspect}" }
@@ -389,7 +389,7 @@ class MeshCoreTCPMux
       now = Clock.now
       case event
       when Transport::Frame
-        LOGGER.debug { "event=client.frame epoch=#{broker.epoch} session=#{event.endpoint} #{Protocol.describe_command(event.payload, include_payload: true)}" }
+        LOGGER.info { downstream_wire_log(event.endpoint, :rx, event.payload) }
         broker.client_frame(event.endpoint, event.payload, now)
       when Transport::Closed
         remote = @clients[event.endpoint]?.try { |endpoint| socket_address(endpoint.socket.remote_address) } || "unknown"
@@ -425,13 +425,20 @@ class MeshCoreTCPMux
           case action
           when SendFrame
             endpoint = action.session == 0 ? upstream : @clients[action.session]?
-            unless endpoint && endpoint.enqueue(Transport::Write.new(action.epoch, action.write_id, action.payload))
+            if endpoint && endpoint.enqueue(Transport::Write.new(action.epoch, action.write_id, action.payload))
+              if action.session == 0
+                LOGGER.info { WireLog.upstream(action.epoch, :tx, action.payload) }
+              else
+                LOGGER.info { downstream_wire_log(action.session, :tx, action.payload) }
+              end
+            else
               broker.write_failed(action.session, action.epoch, "writer queue unavailable", Clock.now)
             end
           when CloseSession
             if endpoint = @clients.delete(action.session)
               endpoint.stop
             end
+            @client_routes.delete(action.session)
           when EndEpoch
             ended = true if action.epoch == broker.epoch
           when Diagnostic
@@ -473,6 +480,7 @@ class MeshCoreTCPMux
       # leave a stopped socket available to later actions from the old epoch.
       clients = @clients
       @clients = Hash(Int64, Transport::Endpoint).new
+      @client_routes.clear
       LOGGER.info { "event=clients.closing count=#{clients.size} epoch=#{@next_epoch}" } unless clients.empty?
       clients.each do |id, endpoint|
         remote = socket_address(endpoint.socket.remote_address) rescue "unknown"
@@ -556,6 +564,17 @@ class MeshCoreTCPMux
       # Socket address rendering is public transport metadata and is vital for
       # distinguishing downstream clients and upstream reconnect attempts.
       address.to_s
+    end
+
+    private def downstream_wire_log(session : Int64, direction : Symbol, payload : Bytes) : String
+      # Dedicated connections are named by their stable listener port so a
+      # replacement socket continues the same visible stream. Multi-client
+      # connections retain their transient session number.
+      if (route = @client_routes[session]?) && route.kind.dedicated_client?
+        WireLog.dedicated_client(route.dedicated_slot_id.not_nil!, direction, payload)
+      else
+        WireLog.multi_client(session, direction, payload)
+      end
     end
   end
 end

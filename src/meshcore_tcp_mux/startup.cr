@@ -46,19 +46,20 @@ class MeshCoreTCPMux
       # Returns the next internal command, if any. No startup output is public.
       check_deadline(now)
       raise Error.new("empty startup response") if payload.empty?
-      return nil if payload[0] >= 0x80 # 0x80 starts the asynchronous push-code range.
+      return nil if payload[0] >= Protocol::PUSH_ADVERT # PUSH_ADVERT starts the asynchronous push-code range.
       raise Error.new("ordinary response after startup boundary") if @ready
       if @awaiting_scope
-        raise Error.new("startup scope reset rejected") unless payload == Bytes[0] # OK: temporary scope has been reset.
+        raise Error.new("startup scope reset rejected") unless payload == Bytes[Protocol::RESP_OK]
         @ready = true
-      elsif payload[0] == 5 # 5 = SELF_INFO.
+      elsif payload[0] == Protocol::RESP_SELF_INFO
         @self_key = Protocol.validate_self_info!(payload)
         @self_run += 1
-      elsif payload[0] == 0x0d && @self_run >= 5 # 0x0d = DEVICE_INFO.
+      elsif payload[0] == Protocol::RESP_DEVICE_INFO && @self_run >= 5
         Protocol.validate_device_info!(payload)
         @device_info = payload.dup
         @awaiting_scope = true
-        return Bytes[0x36, 0] # SET_FLOOD_SCOPE_KEY: mode 0 without a key restores the default scope.
+        # SET_FLOOD_SCOPE_KEY mode zero selects the companion's configured default.
+        return Bytes[Protocol::CMD_SET_FLOOD_SCOPE_KEY, 0]
       else
         @self_run = 0
         @self_key = nil

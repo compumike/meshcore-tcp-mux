@@ -496,7 +496,13 @@ describe "remaining design acceptance invariants" do
       h.response(contact)
       h.broker.failed.should be_false
     end
+    # The harness deliberately does not deliver the writer-completion event;
+    # CONTACTS_START at second one is the first proof that the command reached
+    # the radio, so the thirty-second total budget expires at second 31.
     h.now = 30.seconds
+    h.broker.tick(h.now)
+    h.broker.failed.should be_false
+    h.now = 31.seconds
     h.broker.tick(h.now)
     h.broker.failed.should be_true
   end
@@ -542,28 +548,37 @@ describe "remaining design acceptance invariants" do
     one.broker.sessions.has_key?(1_i64).should be_false
   end
 
-  it "applies the default maintenance and private-key export refusal policy locally" do
-    h = GapHarness.new(ids: [1_i64])
-    commands = [
-      # IMPORT_PRIVATE_KEY (24), followed by 64 synthetic zero key bytes;
-      # maintenance-restricted.
-      # 64 zero bytes stand in for private-key material; this fixture must be refused by
-      # default.
-      Bytes[24_u8] + Bytes.new(64, 0_u8),
-      # FACTORY_RESET (51) plus required ASCII "reset" magic string.
-      Bytes[51_u8] + "reset".to_slice,
-    ]
-    commands.each do |command|
-      h.client(1_i64, command)
-      # ERR (0x01), UNSUPPORTED_CMD.
-      h.downstream[1_i64].last.should eq(Bytes[1_u8, 1_u8])
-      h.upstream.should be_empty
+  it "allows sensitive commands by default and applies each explicit refusal locally" do
+    import = Bytes[24_u8] + Bytes.new(64, 0_u8) # IMPORT_PRIVATE_KEY plus a synthetic 64-byte key.
+    reset = Bytes[51_u8] + "reset".to_slice     # FACTORY_RESET plus required ASCII magic.
+    export = Bytes[23_u8]                       # EXPORT_PRIVATE_KEY.
+
+    # Direct-companion defaults preserve native behavior. Use a fresh broker
+    # for each maintenance command because accepting one intentionally ends its
+    # upstream epoch after the result is delivered.
+    {import, reset, export}.each do |command|
+      allowed = GapHarness.new(ids: [1_i64])
+      allowed.client(1_i64, command)
+      allowed.upstream.shift.payload.should eq(command)
     end
-    # EXPORT_PRIVATE_KEY (23): request secret key material.
-    h.client(1_i64, Bytes[23_u8])
-    # DISABLED (0x0f): native private-key-export refusal, not a generic ERR.
-    h.downstream[1_i64].last.should eq(Bytes[0x0f_u8])
-    h.upstream.should be_empty
+
+    import_disabled = MeshCoreTCPMux::Config.new.tap { |config| config.private_key_import = false }
+    rejected_import = GapHarness.new(import_disabled, [1_i64])
+    rejected_import.client(1_i64, import)
+    rejected_import.downstream[1_i64].last.should eq(Bytes[1_u8, 1_u8]) # ERR, UNSUPPORTED_CMD.
+    rejected_import.upstream.should be_empty
+
+    reset_disabled = MeshCoreTCPMux::Config.new.tap { |config| config.factory_reset = false }
+    rejected_reset = GapHarness.new(reset_disabled, [1_i64])
+    rejected_reset.client(1_i64, reset)
+    rejected_reset.downstream[1_i64].last.should eq(Bytes[1_u8, 1_u8]) # ERR, UNSUPPORTED_CMD.
+    rejected_reset.upstream.should be_empty
+
+    export_disabled = MeshCoreTCPMux::Config.new.tap { |config| config.private_key_export = false }
+    rejected_export = GapHarness.new(export_disabled, [1_i64])
+    rejected_export.client(1_i64, export)
+    rejected_export.downstream[1_i64].last.should eq(Bytes[0x0f_u8]) # DISABLED.
+    rejected_export.upstream.should be_empty
   end
 
   it "allows reboot by default with multiple clients and pending radio work" do

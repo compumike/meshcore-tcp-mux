@@ -35,8 +35,7 @@ class MeshCoreTCPMux
         options.on("--response-timeout SECONDS", "Upstream response / contacts idle deadline (5)") { |v| config.response_timeout = v.to_f.seconds }
         options.on("--contacts-timeout SECONDS", "Total contacts transaction deadline (30)") { |v| config.contacts_timeout = v.to_f.seconds }
         options.on("--poll-interval SECONDS", "Inbox fallback polling interval (5)") { |v| config.poll_interval = v.to_f.seconds }
-        options.on("--maintenance", "Enable private-key import and factory reset with one idle session") { config.maintenance = true }
-        options.on("--allow-private-key-export", "Allow requester-only private key export") { config.private_key_export = true }
+        self.class.register_policy_options(options, config)
         options.on("--version", "Show release version") { puts "meshcore-tcp-mux #{MeshCoreTCPMux::VERSION}"; exit }
         options.on("-h", "--help", "Show usage") { puts options; exit }
       end
@@ -58,6 +57,26 @@ class MeshCoreTCPMux
         Log.for("meshcore_tcp_mux").error(exception: ex) { "process failed" }
         exit 1
       end
+    end
+
+    def self.register_policy_options(options : OptionParser, config : Config) : Nil
+      # Direct companion access permits these operations. Keep that behavior by
+      # default while allowing deployments to deny each sensitive command.
+      options.on("--reject-private-key-export", "Reject requester-only private-key export") do
+        config.private_key_export = false
+      end
+      options.on("--reject-private-key-import", "Reject private-key import") do
+        config.private_key_import = false
+      end
+      options.on("--reject-factory-reset", "Reject factory reset") do
+        config.factory_reset = false
+      end
+
+      # These former opt-in switches are accepted so existing service command
+      # lines continue to start. They are no-ops because their policies now
+      # match the defaults, and therefore cannot override an explicit reject.
+      options.on("--maintenance", "Compatibility option; import and reset are allowed by default") { }
+      options.on("--allow-private-key-export", "Compatibility option; export is allowed by default") { }
     end
   end
 end

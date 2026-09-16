@@ -160,12 +160,13 @@ They do not block unrelated local queries or inbox work.
 - `Runtime` reconnects with bounded exponential backoff and repeats the startup
   fence before accepting new clients.
 - Reboot uses normal scheduling and ends when the companion disconnects.
-  Factory reset and private-key import require `--maintenance`, one client, and
-  no outstanding radio or signing lease. Private-key export separately requires
-  `--allow-private-key-export`.
-- Logging uses Crystal `Log` and `LOG_LEVEL`. Protocol-aware payload logging is
-  sanitized; private keys, passwords, channel and scope keys, PINs, signing
-  input, and custom-variable values are never logged.
+  Factory reset and private-key import are allowed by default, require one
+  client and no outstanding radio or signing lease, and can be disabled
+  independently. Private-key export is also allowed by default and can be
+  disabled independently.
+- Logging uses Crystal `Log` and `LOG_LEVEL`. Every wire frame is logged with
+  its endpoint, direction, decoded public structure, and complete hexadecimal
+  payload.
 
 The mux must be the companion's **only command producer across TCP, BLE, and
 USB**. Another producer can inject untagged responses and make ownership

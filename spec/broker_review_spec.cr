@@ -2,6 +2,7 @@ require "./spec_helper"
 require "../src/meshcore_tcp_mux/broker"
 
 private alias BrokerReviewAction = MeshCoreTCPMux::Action
+private alias BrokerReviewProtocol = MeshCoreTCPMux::Protocol
 
 private def review_sends(actions : Array(BrokerReviewAction), session : Int64) : Array(MeshCoreTCPMux::SendFrame)
   actions.compact_map do |action|
@@ -43,6 +44,124 @@ describe "broker event-order regressions" do
     # Its eventually delivered completion remains a harmless stale event.
     broker.written(0_i64, command_write.epoch, command_write.write_id, 6.seconds)
     broker.failed.should be_false
+  end
+
+  it "starts the response deadline when the matching upstream write completes" do
+    config = MeshCoreTCPMux::Config.new
+    config.response_timeout = 5.seconds
+    config.write_timeout = 30.seconds
+    broker = review_ready_broker(config)
+    broker.client_frame(1_i64, Bytes[5_u8], Time::Span.zero) # GET_DEVICE_TIME.
+    command_write = review_sends(broker.take_actions, 0_i64).first
+
+    # The socket write remains pending after the old dispatch-based response
+    # deadline but within its 30-second write budget. It must not be judged by
+    # the response clock before the writer completes.
+    broker.tick(6.seconds)
+    broker.failed.should be_false
+    broker.written(0_i64, command_write.epoch, command_write.write_id, 7.seconds)
+    broker.tick(10.seconds)
+    broker.failed.should be_false
+    broker.take_actions # Discard periodic MSG_WAITING reminders; they are unrelated to command ownership.
+
+    # CURRENT_TIME (0x09): four-byte little-endian synthetic timestamp. This is
+    # later than five seconds after dispatch but within five seconds of write
+    # completion, so it remains the rightful response.
+    current_time = Bytes[9_u8, 1_u8, 2_u8, 3_u8, 4_u8]
+    broker.upstream_frame(current_time, 11.seconds)
+    review_sends(broker.take_actions, 1_i64).map(&.payload).should eq([current_time])
+    broker.failed.should be_false
+  end
+
+  it "starts an internal inbox response deadline after its delayed write" do
+    config = MeshCoreTCPMux::Config.new
+    config.response_timeout = 5.seconds
+    config.write_timeout = 30.seconds
+    broker = review_ready_broker(config)
+
+    # A downstream SYNC_NEXT_MESSAGE against an empty local inbox authorizes
+    # the mux's hidden physical pop. The physical command has owner zero.
+    broker.client_frame(1_i64, Bytes[BrokerReviewProtocol::CMD_SYNC_NEXT_MESSAGE], Time::Span.zero)
+    internal_write = review_sends(broker.take_actions, 0_i64).first
+    internal_write.payload.should eq(Bytes[BrokerReviewProtocol::CMD_SYNC_NEXT_MESSAGE])
+
+    broker.tick(6.seconds)
+    broker.failed.should be_false
+    broker.written(0_i64, internal_write.epoch, internal_write.write_id, 7.seconds)
+    broker.tick(10.seconds)
+    broker.failed.should be_false
+
+    # NO_MORE_MESSAGES terminates the hidden inbox pop within five seconds of
+    # the actual write even though dispatch occurred eleven seconds earlier.
+    broker.upstream_frame(Bytes[BrokerReviewProtocol::RESP_NO_MORE_MESSAGES], 11.seconds)
+    broker.failed.should be_false
+  end
+
+  it "starts the contacts-wide deadline when its upstream write completes" do
+    config = MeshCoreTCPMux::Config.new
+    config.response_timeout = 5.seconds
+    config.contacts_timeout = 30.seconds
+    config.write_timeout = 40.seconds
+    broker = review_ready_broker(config)
+    broker.client_frame(1_i64, Bytes[4_u8], Time::Span.zero) # GET_CONTACTS.
+    command_write = review_sends(broker.take_actions, 0_i64).first
+
+    # A queued write may outlive the old dispatch-based 30-second contacts
+    # budget while remaining inside its configured write budget.
+    broker.tick(31.seconds)
+    broker.failed.should be_false
+    broker.written(0_i64, command_write.epoch, command_write.write_id, 32.seconds)
+    broker.take_actions
+
+    # CONTACTS_START: opcode followed by a synthetic little-endian u32 count.
+    broker.upstream_frame(Bytes[2_u8, 0_u8, 0_u8, 0_u8, 0_u8], 36.seconds)
+    broker.take_actions
+    # END_OF_CONTACTS: opcode followed by the final synthetic u32 count.
+    broker.upstream_frame(Bytes[4_u8, 0_u8, 0_u8, 0_u8, 0_u8], 37.seconds)
+    replies = review_sends(broker.take_actions, 1_i64).map(&.payload)
+    replies.should eq([Bytes[4_u8, 0_u8, 0_u8, 0_u8, 0_u8]])
+    broker.failed.should be_false
+  end
+
+  it "starts the contacts-wide deadline when a response wins the writer-event race" do
+    config = MeshCoreTCPMux::Config.new
+    config.response_timeout = 40.seconds
+    config.contacts_timeout = 30.seconds
+    config.write_timeout = 40.seconds
+    broker = review_ready_broker(config)
+    broker.client_frame(1_i64, Bytes[BrokerReviewProtocol::CMD_GET_CONTACTS], Time::Span.zero)
+    review_sends(broker.take_actions, 0_i64).size.should eq(1)
+
+    # CONTACTS_START can reach the broker before the writer fiber reports its
+    # completion. Receiving it proves the queued command was physically sent,
+    # so this event must begin both response and contacts clocks.
+    start = Bytes[BrokerReviewProtocol::RESP_CONTACTS_START, 0_u8, 0_u8, 0_u8, 0_u8]
+    broker.upstream_frame(start, 32.seconds)
+    broker.take_actions
+    broker.tick(61.seconds)
+    broker.failed.should be_false
+
+    terminator = Bytes[BrokerReviewProtocol::RESP_END_OF_CONTACTS, 0_u8, 0_u8, 0_u8, 0_u8]
+    broker.upstream_frame(terminator, 61.seconds)
+    replies = review_sends(broker.take_actions, 1_i64).map(&.payload)
+    replies.select { |payload| payload[0] == BrokerReviewProtocol::RESP_END_OF_CONTACTS }.should eq([terminator])
+    broker.failed.should be_false
+  end
+
+  it "reports response timeout state needed to diagnose an uncertain command" do
+    config = MeshCoreTCPMux::Config.new
+    config.response_timeout = 5.seconds
+    broker = review_ready_broker(config)
+    broker.client_frame(1_i64, Bytes[5_u8], Time::Span.zero) # GET_DEVICE_TIME.
+    command_write = review_sends(broker.take_actions, 0_i64).first
+    broker.written(0_i64, command_write.epoch, command_write.write_id, Time::Span.zero)
+    broker.take_actions
+
+    broker.tick(5.seconds)
+    reason = broker.take_actions.compact_map(&.as?(MeshCoreTCPMux::EndEpoch)).first.reason
+    reason.should contain("command=get_device_time opcode=5 owner=1 step=command")
+    reason.should contain("progress_elapsed_ms=5000.0 response_timeout_ms=5000.0")
+    reason.should contain("response_frames=0 contacts_started=false write_pending=false")
   end
 
   it "gives every hidden scope substep its own response deadline" do
@@ -127,5 +246,28 @@ describe "broker event-order regressions" do
     actions.any?(MeshCoreTCPMux::CloseSession).should be_true
     actions.any?(MeshCoreTCPMux::EndEpoch).should be_true
     broker.active.should be_nil
+  end
+
+  it "applies private-key import and factory-reset permissions independently" do
+    import = Bytes[24_u8] + Bytes.new(64, 0_u8) # IMPORT_PRIVATE_KEY plus a synthetic 64-byte key.
+    reset = Bytes[51_u8] + "reset".to_slice     # FACTORY_RESET plus required ASCII magic.
+
+    import_disabled = MeshCoreTCPMux::Config.new
+    import_disabled.private_key_import = false
+    import_disabled.factory_reset = true
+    first = review_ready_broker(import_disabled)
+    first.client_frame(1_i64, import, Time::Span.zero)
+    review_sends(first.take_actions, 1_i64).map(&.payload).should eq([Bytes[1_u8, 1_u8]]) # ERR(UNSUPPORTED_CMD).
+    first.client_frame(1_i64, reset, Time::Span.zero)
+    review_sends(first.take_actions, 0_i64).map(&.payload).should eq([reset])
+
+    reset_disabled = MeshCoreTCPMux::Config.new
+    reset_disabled.private_key_import = true
+    reset_disabled.factory_reset = false
+    second = review_ready_broker(reset_disabled)
+    second.client_frame(1_i64, reset, Time::Span.zero)
+    review_sends(second.take_actions, 1_i64).map(&.payload).should eq([Bytes[1_u8, 1_u8]]) # ERR(UNSUPPORTED_CMD).
+    second.client_frame(1_i64, import, Time::Span.zero)
+    review_sends(second.take_actions, 0_i64).map(&.payload).should eq([import])
   end
 end

@@ -16,10 +16,9 @@ Set `MESHCORE_UPSTREAM_HOST` to your companion's hostname or IP address before
 running the daemon.
 
 Logging uses Crystal's standard `Log` configuration. `LOG_LEVEL` defaults to
-`INFO`; set it to `DEBUG` to include protocol-aware hexadecimal payloads with
-private keys, passwords, channel and scope keys, device PINs, signing input, and
-custom-variable values redacted. Logs go to stderr so `--probe` keeps stdout
-machine-readable.
+`INFO`. Every wire frame includes its complete hexadecimal payload together
+with fields the mux can decode without decrypting it. Logs go to stderr so
+`--probe` keeps stdout machine-readable.
 
 ```sh
 LOG_LEVEL=DEBUG direnv exec . out/meshcore-tcp-mux \
@@ -76,6 +75,27 @@ meshcore-cli -t 127.0.0.1 -p 5001 list
 `--probe` performs startup synchronization and prints public firmware
 identification, then exits without starting a listener. Stop a running daemon
 before probing the physical upstream directly.
+
+## Sensitive-command policy
+
+The default policy preserves the operations available through a direct
+companion connection. Private-key export is returned only to its requester;
+private-key import and factory reset are admitted only through the exclusive
+disruptive-command lifecycle. To deny any of these commands at the mux, add its
+independent reject option:
+
+```sh
+out/meshcore-tcp-mux \
+  --upstream-host "$MESHCORE_UPSTREAM_HOST" --upstream-port 5000 \
+  --reject-private-key-export \
+  --reject-private-key-import \
+  --reject-factory-reset
+```
+
+Existing invocations containing `--allow-private-key-export` or `--maintenance`
+remain valid. Both switches are compatibility no-ops because they request the
+new default policy. A reject option remains effective regardless of where a
+legacy allow option appears on the command line.
 
 ## Docker
 

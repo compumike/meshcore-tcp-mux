@@ -106,6 +106,13 @@ private def matrix_phase(phase : Symbol) : {MeshCoreTCPMux::Broker, Time::Span}
   # SET_DEVICE_TIME (6), timestamp 0 (u32 little-endian); a queued state-changing command.
   broker.client_frame(2_i64, Bytes[6_u8, 0_u8, 0_u8, 0_u8, 0_u8], now)
   broker.take_actions
+  if write_id = broker.active.not_nil!.upstream_write_id
+    # Missing-reply cases begin only after the current upstream command has
+    # actually left the socket writer. Before Written, the independent write
+    # timeout owns the operation and no response deadline is running.
+    broker.written(0_i64, broker.epoch, write_id, now)
+    broker.take_actions
+  end
   {broker, now}
 end
 

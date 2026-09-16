@@ -123,6 +123,29 @@ guarantee: an item is consumed from a dedicated queue when the mux accepts it
 for socket output, so a connection failure immediately afterward can still lose
 that item.
 
+The command policy matches a direct companion connection by default: private-key
+export, private-key import, and factory reset are available. Export responses go
+only to the requesting connection. Import and factory reset still use the mux's
+exclusive disruptive-command lifecycle, which requires one idle downstream
+session and ends the upstream epoch after the real companion result.
+
+Deployments can reject these operations independently:
+
+```text
+--reject-private-key-export
+--reject-private-key-import
+--reject-factory-reset
+```
+
+The former `--allow-private-key-export` and `--maintenance` options remain
+accepted as compatibility no-ops because those permissions are now the default.
+
+At the default `INFO` level, wire diagnostics identify the endpoint and
+direction, for example `UPSTREAM(12): rx END_OF_CONTACTS`,
+`MULTI_CLIENT(7): tx END_OF_CONTACTS`, or
+`DEDICATED_CLIENT(5002): tx END_OF_CONTACTS`. Each line contains the complete
+payload in hexadecimal plus fields that can be decoded without decrypting it.
+
 -----
 
 ## Limitations

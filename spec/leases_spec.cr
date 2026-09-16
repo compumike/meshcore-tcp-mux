@@ -106,6 +106,35 @@ describe MeshCoreTCPMux::DmRing do
   end
 end
 
+describe MeshCoreTCPMux::CompanionRadioState do
+  # Cross-epoch quarantine specs distinguish a generic unknown radio result
+  # from a plain DM that may also have advanced the physical ACK-ring cursor.
+
+  it "holds DM cursor uncertainty until every older reservation expires" do
+    state = MeshCoreTCPMux::CompanionRadioState.new
+    state.dm_ring.accepted(sent(1_u32, 120_000_u32), Time::Span.zero)
+    state.quarantine(Time::Span.zero, 60.seconds, dm_cursor_uncertain: true)
+
+    state.quarantined?(59.999.seconds).should be_true
+    # The fixed uncertainty interval ended, but the known ACK entry remains
+    # live through the conservative 151-second lease deadline.
+    state.quarantined?(60.seconds).should be_true
+    state.quarantined?(150.999.seconds).should be_true
+    state.quarantined?(151.seconds).should be_false
+  end
+
+  it "does not extend non-DM uncertainty for unrelated ACK reservations" do
+    state = MeshCoreTCPMux::CompanionRadioState.new
+    state.dm_ring.accepted(sent(1_u32, 120_000_u32), Time::Span.zero)
+    state.quarantine(Time::Span.zero, 60.seconds)
+
+    # A remote request whose SENT was lost does not change the ACK-ring cursor.
+    # Its own finite ambiguity window can therefore end independently.
+    state.quarantined?(60.seconds).should be_false
+    state.dm_ring.pending_count(60.seconds).should eq(1)
+  end
+end
+
 describe MeshCoreTCPMux::RemoteLease do
   # Synthetic six-byte peer public-key prefix 01..06; used only for routing matches.
   peer = Bytes[1, 2, 3, 4, 5, 6]

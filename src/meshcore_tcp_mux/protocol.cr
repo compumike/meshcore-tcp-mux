@@ -4,97 +4,205 @@ class MeshCoreTCPMux
     # Describes the supported native companion wire protocol. The broker uses these
     # rules to reject malformed commands and recognize complete, correctly owned replies.
     # Native v13 caps decoded payloads at 176 bytes and ordinary encoded paths at 64 bytes.
-    MAX_PAYLOAD           =   176
-    NATIVE_PROTOCOL_LEVEL = 13_u8
-    MAX_PATH_SIZE         =    64
+    MAX_PAYLOAD           =     176
+    NATIVE_PROTOCOL_LEVEL =   13_u8
+    MAX_PATH_SIZE         =      64
+    NO_PATH_ENCODING      = 0xff_u8
+    PATH_COUNT_MASK       = 0x3f_u8
+    PATH_WIDTH_SHIFT_MASK = 0x03_u8
 
     ERR_UNSUPPORTED_CMD = 1_u8
+    ERR_TABLE_FULL      = 3_u8
+    ERR_BAD_STATE       = 4_u8
     ERR_ILLEGAL_ARG     = 6_u8
 
-    # Ordinary response names are in wire-code order; unsanitized payloads never enter logs.
-    RESPONSE_NAMES = %w(ok err contacts_start contact end_of_contacts self_info
-      sent contact_message channel_message current_time no_more_messages
-      export_contact battery_and_storage device_info private_key disabled
-      contact_message_v3 channel_message_v3 channel_info sign_start signature
-      custom_vars advert_path tuning_params stats autoadd_config allowed_repeat_freq
-      channel_data default_flood_scope)
+    STATS_TYPE_CORE   = 0_u8
+    STATS_TYPE_RADIO  = 1_u8
+    STATS_TYPE_PACKET = 2_u8
+
+    CMD_APP_START               =  1_u8
+    CMD_SEND_TXT_MSG            =  2_u8
+    CMD_SEND_CHANNEL_TXT_MSG    =  3_u8
+    CMD_GET_CONTACTS            =  4_u8
+    CMD_GET_DEVICE_TIME         =  5_u8
+    CMD_SET_DEVICE_TIME         =  6_u8
+    CMD_SEND_SELF_ADVERT        =  7_u8
+    CMD_SET_ADVERT_NAME         =  8_u8
+    CMD_ADD_UPDATE_CONTACT      =  9_u8
+    CMD_SYNC_NEXT_MESSAGE       = 10_u8
+    CMD_SET_RADIO_PARAMS        = 11_u8
+    CMD_SET_RADIO_TX_POWER      = 12_u8
+    CMD_RESET_PATH              = 13_u8
+    CMD_SET_ADVERT_LATLON       = 14_u8
+    CMD_REMOVE_CONTACT          = 15_u8
+    CMD_SHARE_CONTACT           = 16_u8
+    CMD_EXPORT_CONTACT          = 17_u8
+    CMD_IMPORT_CONTACT          = 18_u8
+    CMD_REBOOT                  = 19_u8
+    CMD_GET_BATT_AND_STORAGE    = 20_u8
+    CMD_SET_TUNING_PARAMS       = 21_u8
+    CMD_DEVICE_QUERY            = 22_u8
+    CMD_EXPORT_PRIVATE_KEY      = 23_u8
+    CMD_IMPORT_PRIVATE_KEY      = 24_u8
+    CMD_SEND_RAW_DATA           = 25_u8
+    CMD_SEND_LOGIN              = 26_u8
+    CMD_SEND_STATUS_REQ         = 27_u8
+    CMD_HAS_CONNECTION          = 28_u8
+    CMD_LOGOUT                  = 29_u8
+    CMD_GET_CONTACT_BY_KEY      = 30_u8
+    CMD_GET_CHANNEL             = 31_u8
+    CMD_SET_CHANNEL             = 32_u8
+    CMD_SIGN_START              = 33_u8
+    CMD_SIGN_DATA               = 34_u8
+    CMD_SIGN_FINISH             = 35_u8
+    CMD_SEND_TRACE_PATH         = 36_u8
+    CMD_SET_DEVICE_PIN          = 37_u8
+    CMD_SET_OTHER_PARAMS        = 38_u8
+    CMD_SEND_TELEMETRY_REQ      = 39_u8
+    CMD_GET_CUSTOM_VARS         = 40_u8
+    CMD_SET_CUSTOM_VAR          = 41_u8
+    CMD_GET_ADVERT_PATH         = 42_u8
+    CMD_GET_TUNING_PARAMS       = 43_u8
+    CMD_SEND_BINARY_REQ         = 50_u8
+    CMD_FACTORY_RESET           = 51_u8
+    CMD_SEND_PATH_DISCOVERY_REQ = 52_u8
+    CMD_SET_FLOOD_SCOPE_KEY     = 54_u8
+    CMD_SEND_CONTROL_DATA       = 55_u8
+    CMD_GET_STATS               = 56_u8
+    CMD_SEND_ANON_REQ           = 57_u8
+    CMD_SET_AUTOADD_CONFIG      = 58_u8
+    CMD_GET_AUTOADD_CONFIG      = 59_u8
+    CMD_GET_ALLOWED_REPEAT_FREQ = 60_u8
+    CMD_SET_PATH_HASH_MODE      = 61_u8
+    CMD_SEND_CHANNEL_DATA       = 62_u8
+    CMD_SET_DEFAULT_FLOOD_SCOPE = 63_u8
+    CMD_GET_DEFAULT_FLOOD_SCOPE = 64_u8
+    CMD_SEND_RAW_PACKET         = 65_u8
+
+    RESP_OK                  = 0x00_u8
+    RESP_ERR                 = 0x01_u8
+    RESP_CONTACTS_START      = 0x02_u8
+    RESP_CONTACT             = 0x03_u8
+    RESP_END_OF_CONTACTS     = 0x04_u8
+    RESP_SELF_INFO           = 0x05_u8
+    RESP_SENT                = 0x06_u8
+    RESP_CONTACT_MESSAGE     = 0x07_u8
+    RESP_CHANNEL_MESSAGE     = 0x08_u8
+    RESP_CURRENT_TIME        = 0x09_u8
+    RESP_NO_MORE_MESSAGES    = 0x0a_u8
+    RESP_EXPORT_CONTACT      = 0x0b_u8
+    RESP_BATTERY_AND_STORAGE = 0x0c_u8
+    RESP_DEVICE_INFO         = 0x0d_u8
+    RESP_PRIVATE_KEY         = 0x0e_u8
+    RESP_DISABLED            = 0x0f_u8
+    RESP_CONTACT_MESSAGE_V3  = 0x10_u8
+    RESP_CHANNEL_MESSAGE_V3  = 0x11_u8
+    RESP_CHANNEL_INFO        = 0x12_u8
+    RESP_SIGN_START          = 0x13_u8
+    RESP_SIGNATURE           = 0x14_u8
+    RESP_CUSTOM_VARS         = 0x15_u8
+    RESP_ADVERT_PATH         = 0x16_u8
+    RESP_TUNING_PARAMS       = 0x17_u8
+    RESP_STATS               = 0x18_u8
+    RESP_AUTOADD_CONFIG      = 0x19_u8
+    RESP_ALLOWED_REPEAT_FREQ = 0x1a_u8
+    RESP_CHANNEL_DATA        = 0x1b_u8
+    RESP_DEFAULT_FLOOD_SCOPE = 0x1c_u8
+
+    PUSH_ADVERT                  = 0x80_u8
+    PUSH_PATH_UPDATED            = 0x81_u8
+    PUSH_SEND_CONFIRMED          = 0x82_u8
+    PUSH_MSG_WAITING             = 0x83_u8
+    PUSH_RAW_DATA                = 0x84_u8
+    PUSH_LOGIN_SUCCESS           = 0x85_u8
+    PUSH_LOGIN_FAILURE           = 0x86_u8
+    PUSH_STATUS_RESPONSE         = 0x87_u8
+    PUSH_LOG_RX_DATA             = 0x88_u8
+    PUSH_TRACE_DATA              = 0x89_u8
+    PUSH_NEW_ADVERT              = 0x8a_u8
+    PUSH_TELEMETRY_RESPONSE      = 0x8b_u8
+    PUSH_BINARY_RESPONSE         = 0x8c_u8
+    PUSH_PATH_DISCOVERY_RESPONSE = 0x8d_u8
+    PUSH_CONTROL_DATA            = 0x8e_u8
+    PUSH_CONTACT_DELETED         = 0x8f_u8
+    PUSH_CONTACTS_FULL           = 0x90_u8
+
+    RESPONSE_NAMES = {
+      RESP_OK => "ok", RESP_ERR => "err", RESP_CONTACTS_START => "contacts_start",
+      RESP_CONTACT => "contact", RESP_END_OF_CONTACTS => "end_of_contacts",
+      RESP_SELF_INFO => "self_info", RESP_SENT => "sent",
+      RESP_CONTACT_MESSAGE => "contact_message", RESP_CHANNEL_MESSAGE => "channel_message",
+      RESP_CURRENT_TIME => "current_time", RESP_NO_MORE_MESSAGES => "no_more_messages",
+      RESP_EXPORT_CONTACT => "export_contact", RESP_BATTERY_AND_STORAGE => "battery_and_storage",
+      RESP_DEVICE_INFO => "device_info", RESP_PRIVATE_KEY => "private_key",
+      RESP_DISABLED => "disabled", RESP_CONTACT_MESSAGE_V3 => "contact_message_v3",
+      RESP_CHANNEL_MESSAGE_V3 => "channel_message_v3", RESP_CHANNEL_INFO => "channel_info",
+      RESP_SIGN_START => "sign_start", RESP_SIGNATURE => "signature",
+      RESP_CUSTOM_VARS => "custom_vars", RESP_ADVERT_PATH => "advert_path",
+      RESP_TUNING_PARAMS => "tuning_params", RESP_STATS => "stats",
+      RESP_AUTOADD_CONFIG => "autoadd_config", RESP_ALLOWED_REPEAT_FREQ => "allowed_repeat_freq",
+      RESP_CHANNEL_DATA => "channel_data", RESP_DEFAULT_FLOOD_SCOPE => "default_flood_scope",
+      PUSH_ADVERT => "advert", PUSH_PATH_UPDATED => "path_updated",
+      PUSH_SEND_CONFIRMED => "send_confirmed", PUSH_MSG_WAITING => "msg_waiting",
+      PUSH_RAW_DATA => "raw_data", PUSH_LOGIN_SUCCESS => "login_success",
+      PUSH_LOGIN_FAILURE => "login_failure", PUSH_STATUS_RESPONSE => "status_response",
+      PUSH_LOG_RX_DATA => "log_rx_data", PUSH_TRACE_DATA => "trace_data",
+      PUSH_NEW_ADVERT => "new_advert", PUSH_TELEMETRY_RESPONSE => "telemetry_response",
+      PUSH_BINARY_RESPONSE => "binary_response", PUSH_PATH_DISCOVERY_RESPONSE => "path_discovery_response",
+      PUSH_CONTROL_DATA => "control_data", PUSH_CONTACT_DELETED => "contact_deleted",
+      PUSH_CONTACTS_FULL => "contacts_full",
+    }
 
     def self.response_name(code : UInt8) : String
       # Return a safe diagnostic label, never payload contents. Ordinary replies
       # occupy the low codes; asynchronous pushes use the named 0x80..0x90 range.
-      RESPONSE_NAMES[code]? || case code
-      when 0x80 then "advert"
-      when 0x81 then "path_updated"
-      when 0x82 then "send_confirmed"
-      when 0x83 then "msg_waiting"
-      when 0x84 then "raw_data"
-      when 0x85 then "login_success"
-      when 0x86 then "login_failure"
-      when 0x87 then "status_response"
-      when 0x88 then "log_rx_data"
-      when 0x89 then "trace_data"
-      when 0x8a then "new_advert"
-      when 0x8b then "telemetry_response"
-      when 0x8c then "binary_response"
-      when 0x8d then "path_discovery_response"
-      when 0x8e then "control_data"
-      when 0x8f then "contact_deleted"
-      when 0x90 then "contacts_full"
-      else           "push_#{code}"
-      end
+      RESPONSE_NAMES[code]? || "push_#{code}"
     end
 
     def self.known_response?(code : UInt8) : Bool
       # Ordinary response codes are a closed native-v13 range. Pushes occupy a
       # sparse named range; other high codes remain forward-compatible opaque
       # broadcasts whose diagnostics must take the rate-limited path.
-      code < 0x1d || {
-        0x80_u8, 0x81_u8, 0x82_u8, 0x83_u8, 0x84_u8, 0x85_u8, 0x86_u8,
-        0x87_u8, 0x88_u8, 0x89_u8, 0x8a_u8, 0x8b_u8, 0x8c_u8, 0x8d_u8,
-        0x8e_u8, 0x8f_u8, 0x90_u8,
-      }.includes?(code)
+      RESPONSE_NAMES.has_key?(code)
     end
 
     def self.describe_command(payload : Bytes, include_payload = false) : String
-      # Produce the only representation of a client command that may enter logs.
-      # Public routing identities remain visible, while credentials, private keys,
-      # channel/scope keys, device PINs, signing bytes, and custom-variable values
-      # are replaced byte-for-byte so a later caller cannot accidentally dump them.
+      # Include stable semantic fields in the summary and, when requested, the
+      # complete decoded payload as hexadecimal for wire-level diagnostics.
       descriptor = descriptor(payload)
       name = descriptor.try(&.name) || :unknown
       summary = "command=#{name} opcode=#{hex_byte(payload[0]?)} command_bytes=#{payload.size}"
       if peer = command_peer(payload)
         summary += " peer=#{hex(peer)}"
       end
-      if include_payload
-        summary += descriptor ? " payload=#{redacted_hex(payload, command_redactions(payload))}" : " payload=<redacted-unknown-command>"
-      end
+      summary += command_details(payload)
+      summary += " payload=#{hex(payload)}" if include_payload
       summary
     end
 
     def self.describe_response(payload : Bytes, include_payload = false) : String
-      # Summarize ordinary responses and asynchronous pushes without exposing
-      # response-side key material or the device PIN embedded in DEVICE_INFO.
+      # Summarize ordinary responses and asynchronous pushes, decoding stable
+      # correlation fields while optionally retaining the full wire payload.
       return "response=empty response_bytes=0" if payload.empty?
       summary = "response=#{response_name(payload[0])} code=#{hex_byte(payload[0])} response_bytes=#{payload.size}"
-      if payload[0] == 0x06 && payload.size >= 10 # SENT: type, u32 token, u32 radio timeout.
+      if payload[0] == RESP_SENT && payload.size >= 10 # SENT: type, u32 token, u32 radio timeout.
         summary += " token=#{read_u32(payload, 2)} radio_timeout_ms=#{read_u32(payload, 6)}"
-      elsif {0x85_u8, 0x86_u8, 0x87_u8, 0x8b_u8, 0x8d_u8}.includes?(payload[0]) && payload.size >= 8
+      elsif {PUSH_LOGIN_SUCCESS, PUSH_LOGIN_FAILURE, PUSH_STATUS_RESPONSE,
+             PUSH_TELEMETRY_RESPONSE, PUSH_PATH_DISCOVERY_RESPONSE}.includes?(payload[0]) && payload.size >= 8
         # LOGIN_SUCCESS/FAILURE, STATUS, TELEMETRY, and PATH_DISCOVERY identify
         # the public peer by its six-byte key prefix at response offsets 2..7.
         summary += " peer=#{hex(payload[2, 6])}"
-      elsif payload[0] == 0x82 && payload.size >= 9 # SEND_CONFIRMED: token and round-trip milliseconds.
+      elsif payload[0] == PUSH_SEND_CONFIRMED && payload.size >= 9 # SEND_CONFIRMED: token and round-trip milliseconds.
         summary += " token=#{read_u32(payload, 1)} round_trip_ms=#{read_u32(payload, 5)}"
       end
-      if include_payload
-        summary += known_response?(payload[0]) ? " payload=#{redacted_hex(payload, response_redactions(payload))}" : " payload=<redacted-unknown-push>"
-      end
+      summary += response_details(payload)
+      summary += " payload=#{hex(payload)}" if include_payload
       summary
     end
 
     def self.hex(bytes : Bytes) : String
-      # Render public identifiers, paths, tags, and other non-secret bytes in a
-      # stable form suitable for correlating mux logs with companion logs.
+      # Render wire bytes in a stable form suitable for correlating mux logs
+      # with companion logs and packet captures.
       String.build(bytes.size * 2) do |io|
         bytes.each { |byte| io << byte.to_s(16).rjust(2, '0') }
       end
@@ -111,6 +219,191 @@ class MeshCoreTCPMux
         (payload[offset + 3].to_u32 << 24)
     end
 
+    private def self.read_i32(payload : Bytes, offset : Int32) : Int32
+      read_u32(payload, offset).unsafe_as(Int32)
+    end
+
+    private def self.text(bytes : Bytes) : String
+      String.new(bytes).inspect
+    end
+
+    private def self.fixed_text(bytes : Bytes) : String
+      # Native fixed text fields are NUL-padded C strings. Exclude padding while
+      # retaining escaped output for arbitrary non-UTF-8 bytes before the NUL.
+      length = bytes.index(0_u8) || bytes.size
+      text(bytes[0, length])
+    end
+
+    private def self.command_details(payload : Bytes) : String
+      # Decode only fields whose complete offsets are present. Descriptions also
+      # run for rejected frames, so every branch must remain safe when truncated.
+      return "" if payload.empty?
+      case payload[0]
+      when CMD_SEND_TXT_MSG
+        return "" if payload.size < 13
+        " type=#{payload[1]} attempt=#{payload[2]} timestamp=#{read_u32(payload, 3)} destination=#{hex(payload[7, 6])}" \
+        " text=#{text(payload[13..])}"
+      when CMD_SEND_CHANNEL_TXT_MSG
+        return "" if payload.size < 7
+        " type=#{payload[1]} channel=#{payload[2]} timestamp=#{read_u32(payload, 3)} text=#{text(payload[7..])}"
+      when CMD_SET_ADVERT_NAME
+        payload.size > 1 ? " name=#{text(payload[1..])}" : ""
+      when CMD_ADD_UPDATE_CONTACT
+        return "" if payload.size < 132
+        path = describe_normal_path(payload[35], payload[36, 64])
+        details = " contact_key=#{hex(payload[1, 32])} contact_type=#{payload[33]} flags=#{payload[34]} #{path}" \
+                  " name=#{fixed_text(payload[100, 32])}"
+        details += " latitude_microdegrees=#{read_i32(payload, 136)} longitude_microdegrees=#{read_i32(payload, 140)}" if payload.size >= 144
+        details += " last_modified=#{read_u32(payload, 144)}" if payload.size >= 148
+        details
+      when CMD_SET_ADVERT_LATLON
+        return "" if payload.size < 9
+        details = " latitude_microdegrees=#{read_i32(payload, 1)} longitude_microdegrees=#{read_i32(payload, 5)}"
+        details += " altitude=#{read_i32(payload, 9)}" if payload.size >= 13
+        details
+      when CMD_SEND_RAW_DATA
+        return "" if payload.size < 2
+        path_bytes = payload[1].to_i
+        available = Math.min(path_bytes, Math.max(payload.size - 2, 0))
+        details = " path_bytes=#{path_bytes} path=#{hex(payload[2, available])}"
+        data_offset = 2 + path_bytes
+        details += " data=#{hex(payload[data_offset..])}" if data_offset <= payload.size
+        details
+      when CMD_SEND_TRACE_PATH
+        return "" if payload.size < 10
+        width = 1 << (payload[9] & PATH_WIDTH_SHIFT_MASK)
+        hashes = payload[10..]
+        " tag=#{read_u32(payload, 1)} auth=#{read_u32(payload, 5)} hash_width=#{width}" \
+        " path_bytes=#{hashes.size} hashes=#{hex(hashes)}"
+      when CMD_SET_CHANNEL
+        return "" if payload.size < 34
+        " channel=#{payload[1]} name=#{fixed_text(payload[2, 32])}"
+      when CMD_SEND_CHANNEL_DATA
+        return "" if payload.size < 3
+        path = describe_normal_path(payload[2], payload.size > 3 ? payload[3..] : Bytes.empty)
+        " channel=#{payload[1]} #{path}"
+      when CMD_SEND_RAW_PACKET
+        payload.size > 1 ? " packet=#{hex(payload[1..])}" : ""
+      else
+        ""
+      end
+    end
+
+    private def self.response_details(payload : Bytes) : String
+      # Response offsets exclude the three-byte TCP envelope. Text bodies are
+      # rendered with escapes and binary bodies remain hexadecimal.
+      return "" if payload.empty?
+      case payload[0]
+      when RESP_CONTACT, PUSH_NEW_ADVERT
+        return "" if payload.size < 132
+        details = " contact_key=#{hex(payload[1, 32])} contact_type=#{payload[33]} flags=#{payload[34]}" \
+                  " #{describe_normal_path(payload[35], payload[36, 64])} name=#{fixed_text(payload[100, 32])}"
+        details += " latitude_microdegrees=#{read_i32(payload, 136)} longitude_microdegrees=#{read_i32(payload, 140)}" if payload.size >= 144
+        details += " last_modified=#{read_u32(payload, 144)}" if payload.size >= 148
+        details
+      when RESP_SELF_INFO
+        return "" if payload.size < 58
+        details = " node_type=#{payload[1]} tx_power=#{payload[2]} max_tx_power=#{payload[3]}" \
+                  " public_key=#{hex(payload[4, 32])}" \
+                  " latitude_microdegrees=#{read_i32(payload, 36)} longitude_microdegrees=#{read_i32(payload, 40)}" \
+                  " frequency_hz=#{read_u32(payload, 48)} bandwidth_hz=#{read_u32(payload, 52)}" \
+                  " spreading_factor=#{payload[56]} coding_rate=#{payload[57]}"
+        details += " name=#{text(payload[58..])}" if payload.size > 58
+        details
+      when RESP_DEVICE_INFO
+        return "" if payload.size < 82
+        " protocol=#{payload[1]} max_contacts_half=#{payload[2]} max_channels=#{payload[3]}" \
+        " pin=#{read_u32(payload, 4)} build=#{fixed_text(payload[8, 12])}" \
+        " model=#{fixed_text(payload[20, 40])} firmware=#{fixed_text(payload[60, 20])}" \
+        " repeater=#{payload[80]} path_hash_mode=#{payload[81]}"
+      when RESP_CHANNEL_INFO
+        return "" if payload.size < 50
+        " channel=#{payload[1]} name=#{fixed_text(payload[2, 32])}"
+      when RESP_CONTACT_MESSAGE
+        describe_contact_message(payload, 1, 7, 8, 9, 13)
+      when RESP_CONTACT_MESSAGE_V3
+        details = payload.size >= 4 ? " snr_quarters=#{payload[1].unsafe_as(Int8)}" : ""
+        details + describe_contact_message(payload, 4, 10, 11, 12, 16)
+      when RESP_CHANNEL_MESSAGE
+        describe_channel_message(payload, 1, 2, 3, 4, 8)
+      when RESP_CHANNEL_MESSAGE_V3
+        details = payload.size >= 4 ? " snr_quarters=#{payload[1].unsafe_as(Int8)}" : ""
+        details + describe_channel_message(payload, 4, 5, 6, 7, 11)
+      when RESP_ADVERT_PATH
+        return "" if payload.size < 6
+        " #{describe_normal_path(payload[5], payload[6..])}"
+      when PUSH_TRACE_DATA
+        describe_trace_result(payload)
+      when PUSH_RAW_DATA, PUSH_CONTROL_DATA
+        return "" if payload.size < 4
+        " snr_quarters=#{payload[1].unsafe_as(Int8)} rssi=#{payload[2].unsafe_as(Int8)} path_encoding=#{hex_byte(payload[3])}" \
+        " data=#{hex(payload[4..])}"
+      when PUSH_LOG_RX_DATA
+        return "" if payload.size < 3
+        " snr_quarters=#{payload[1].unsafe_as(Int8)} rssi=#{payload[2].unsafe_as(Int8)} packet=#{hex(payload[3..])}"
+      when PUSH_PATH_DISCOVERY_RESPONSE
+        describe_discovery_paths(payload)
+      else
+        ""
+      end
+    end
+
+    private def self.describe_contact_message(payload : Bytes, peer_offset : Int32, path_offset : Int32,
+                                              type_offset : Int32, timestamp_offset : Int32,
+                                              body_offset : Int32) : String
+      return "" if payload.size < body_offset
+      " sender=#{hex(payload[peer_offset, 6])} path_encoding=#{hex_byte(payload[path_offset])}" \
+      " type=#{payload[type_offset]} timestamp=#{read_u32(payload, timestamp_offset)}" \
+      " text=#{text(payload[body_offset..])}"
+    end
+
+    private def self.describe_channel_message(payload : Bytes, channel_offset : Int32, path_offset : Int32,
+                                              type_offset : Int32, timestamp_offset : Int32,
+                                              body_offset : Int32) : String
+      return "" if payload.size < body_offset
+      " channel=#{payload[channel_offset]} path_encoding=#{hex_byte(payload[path_offset])}" \
+      " type=#{payload[type_offset]} timestamp=#{read_u32(payload, timestamp_offset)}" \
+      " text=#{text(payload[body_offset..])}"
+    end
+
+    private def self.describe_normal_path(encoded : UInt8, available : Bytes) : String
+      return "path_encoding=0xff path=none" if encoded == NO_PATH_ENCODING
+      count = (encoded & PATH_COUNT_MASK).to_i
+      width = (encoded >> 6).to_i + 1
+      wanted = count * width
+      present = Math.min(wanted, available.size)
+      "path_encoding=#{hex_byte(encoded)} path_hashes=#{count} hash_width=#{width}" \
+      " path=#{hex(available[0, present])}"
+    end
+
+    private def self.describe_trace_result(payload : Bytes) : String
+      return "" if payload.size < 12
+      path_bytes = payload[2].to_i
+      width = 1 << (payload[3] & PATH_WIDTH_SHIFT_MASK)
+      present = Math.min(path_bytes, Math.max(payload.size - 12, 0))
+      hop_count = path_bytes // width
+      snr_offset = 12 + path_bytes
+      snr_count = Math.min(hop_count + 1, Math.max(payload.size - snr_offset, 0))
+      " tag=#{read_u32(payload, 4)} auth=#{read_u32(payload, 8)} hash_width=#{width}" \
+      " path_bytes=#{path_bytes} hashes=#{hex(payload[12, present])}" \
+      " snr_quarters=#{hex(payload[snr_offset, snr_count])}"
+    end
+
+    private def self.describe_discovery_paths(payload : Bytes) : String
+      return "" if payload.size < 10
+      cursor = 8
+      out_encoded = payload[cursor]
+      out_size = normal_encoded_path_bytes(out_encoded) || 0
+      out_available = Math.min(out_size, Math.max(payload.size - cursor - 1, 0))
+      details = " outbound_#{describe_normal_path(out_encoded, payload[cursor + 1, out_available])}"
+      cursor += 1 + out_size
+      return details if cursor >= payload.size
+      in_encoded = payload[cursor]
+      in_size = normal_encoded_path_bytes(in_encoded) || 0
+      in_available = Math.min(in_size, Math.max(payload.size - cursor - 1, 0))
+      details + " inbound_#{describe_normal_path(in_encoded, payload[cursor + 1, in_available])}"
+    end
+
     private def self.command_peer(payload : Bytes) : Bytes?
       # Public destination keys exclude the TCP envelope: ordinary peer commands
       # put their key at byte 1, telemetry after three option bytes at byte 4,
@@ -118,79 +411,21 @@ class MeshCoreTCPMux
       # can be logged before validation; require at least the six-byte prefix.
       return nil if payload.empty?
       offset = case payload[0]
-               when 13, 15, 16, 26, 27, 28, 29, 30, 50, 57
+               when CMD_RESET_PATH, CMD_REMOVE_CONTACT, CMD_SHARE_CONTACT,
+                    CMD_SEND_LOGIN, CMD_SEND_STATUS_REQ, CMD_HAS_CONNECTION,
+                    CMD_LOGOUT, CMD_GET_CONTACT_BY_KEY, CMD_SEND_BINARY_REQ,
+                    CMD_SEND_ANON_REQ
                  # RESET_PATH, REMOVE_CONTACT, SHARE_CONTACT, SEND_LOGIN,
                  # SEND_STATUS_REQ, HAS_CONNECTION, LOGOUT, GET_CONTACT_BY_KEY,
                  # SEND_BINARY_REQ, SEND_ANON_REQ.
                  1
-               when 39 # SEND_TELEMETRY_REQ: the four-byte self form has no peer.
+               when CMD_SEND_TELEMETRY_REQ # The four-byte self form has no peer.
                  payload.size >= 36 ? 4 : nil
-               when 52 # SEND_PATH_DISCOVERY_REQ.
+               when CMD_SEND_PATH_DISCOVERY_REQ
                  2
                end
       return nil unless offset && payload.size >= offset + 6
       payload[offset, Math.min(32, payload.size - offset)]
-    end
-
-    private def self.command_redactions(payload : Bytes) : Array(Range(Int32, Int32))
-      return [] of Range(Int32, Int32) if payload.empty?
-      case payload[0]
-      when 24 # IMPORT_PRIVATE_KEY: all 64 private-key bytes.
-        [1..(payload.size - 1)]
-      when 26 # SEND_LOGIN: public destination key followed by the login password.
-        payload.size > 33 ? [33..(payload.size - 1)] : [] of Range(Int32, Int32)
-      when 32 # SET_CHANNEL: opcode, index, public name, 16-byte key, then optional trailing bytes.
-        payload.size > 34 ? [34..(payload.size - 1)] : [] of Range(Int32, Int32)
-      when 34 # SIGN_DATA can contain arbitrary application-secret input.
-        payload.size > 1 ? [1..(payload.size - 1)] : [] of Range(Int32, Int32)
-      when 37 # SET_DEVICE_PIN: four-byte PIN.
-        payload.size > 1 ? [1..(payload.size - 1)] : [] of Range(Int32, Int32)
-      when 41 # SET_CUSTOM_VAR: retain the variable name, redact its value after ':'.
-        if separator = payload.index(':'.ord.to_u8)
-          separator + 1 < payload.size ? [(separator + 1)..(payload.size - 1)] : [] of Range(Int32, Int32)
-        else
-          [] of Range(Int32, Int32)
-        end
-      when 54 # SET_FLOOD_SCOPE_KEY: opcode and mode precede an optional key.
-        payload.size > 2 ? [2..(payload.size - 1)] : [] of Range(Int32, Int32)
-      when 63 # SET_DEFAULT_FLOOD_SCOPE: opcode and 31-byte public name precede its key.
-        payload.size > 32 ? [32..(payload.size - 1)] : [] of Range(Int32, Int32)
-      else
-        [] of Range(Int32, Int32)
-      end
-    end
-
-    private def self.response_redactions(payload : Bytes) : Array(Range(Int32, Int32))
-      return [] of Range(Int32, Int32) if payload.empty?
-      case payload[0]
-      when 0x0d # DEVICE_INFO: bytes 4..7 contain the device PIN.
-        # Logging happens before shape validation so malformed responses remain
-        # diagnosable. Redact whichever PIN bytes are present even when the
-        # fixed 82-byte response was truncated inside this field.
-        payload.size > 4 ? [4..Math.min(7, payload.size - 1)] : [] of Range(Int32, Int32)
-      when 0x0e # PRIVATE_KEY: all bytes after the response code are secret.
-        payload.size > 1 ? [1..(payload.size - 1)] : [] of Range(Int32, Int32)
-      when 0x12 # CHANNEL_INFO: code, index, 32-byte name, then the channel key.
-        payload.size > 34 ? [34..(payload.size - 1)] : [] of Range(Int32, Int32)
-      when 0x15 # CUSTOM_VARS may contain arbitrary configuration secrets.
-        payload.size > 1 ? [1..(payload.size - 1)] : [] of Range(Int32, Int32)
-      when 0x1c # DEFAULT_FLOOD_SCOPE: code and 31-byte public name precede its key.
-        payload.size > 32 ? [32..(payload.size - 1)] : [] of Range(Int32, Int32)
-      else
-        [] of Range(Int32, Int32)
-      end
-    end
-
-    private def self.redacted_hex(payload : Bytes, ranges : Array(Range(Int32, Int32))) : String
-      String.build(payload.size * 2) do |io|
-        payload.each_with_index do |byte, index|
-          if ranges.any?(&.includes?(index))
-            io << "xx"
-          else
-            io << byte.to_s(16).rjust(2, '0')
-          end
-        end
-      end
     end
 
     enum Grammar
@@ -248,122 +483,64 @@ class MeshCoreTCPMux
     end
 
     DESCRIPTORS = {
-      # Replies: SELF_INFO
-      1_u8 => d(1, :app_start, Grammar::Single, [0x05]),
-      # Replies: SENT
-      2_u8 => d(2, :send_txt_msg, Grammar::Single, [0x06], CommandFlags::ScopeSend),
-      # Replies: OK
-      3_u8 => d(3, :send_channel_txt_msg, Grammar::Single, [0x00], CommandFlags::ScopeSend),
-      # Replies: CONTACTS_START, CONTACT, END_OF_CONTACTS
-      4_u8 => d(4, :get_contacts, Grammar::Contacts, [0x02, 0x03, 0x04]),
-      # Replies: CURRENT_TIME
-      5_u8 => d(5, :get_device_time, Grammar::Single, [0x09]),
-      # Replies: OK
-      6_u8 => d(6, :set_device_time, Grammar::Single, [0x00]),
-      # Replies: OK
-      7_u8 => d(7, :send_self_advert, Grammar::Single, [0x00]),
-      # Replies: OK
-      8_u8 => d(8, :set_advert_name, Grammar::Single, [0x00]),
-      # Replies: OK
-      9_u8 => d(9, :add_update_contact, Grammar::Single, [0x00]),
-      # Replies: CONTACT_MESSAGE, CHANNEL_MESSAGE, NO_MORE_MESSAGES, CONTACT_MESSAGE_V3, CHANNEL_MESSAGE_V3, CHANNEL_DATA
-      10_u8 => d(10, :sync_next_message, Grammar::Inbox, [0x07, 0x08, 0x0a, 0x10, 0x11, 0x1b]),
-      # Replies: OK
-      11_u8 => d(11, :set_radio_params, Grammar::Single, [0x00]),
-      # Replies: OK
-      12_u8 => d(12, :set_radio_tx_power, Grammar::Single, [0x00]),
-      # Replies: OK
-      13_u8 => d(13, :reset_path, Grammar::Single, [0x00]),
-      # Replies: OK
-      14_u8 => d(14, :set_advert_latlon, Grammar::Single, [0x00]),
-      # Replies: OK
-      15_u8 => d(15, :remove_contact, Grammar::Single, [0x00]),
-      # Replies: OK
-      16_u8 => d(16, :share_contact, Grammar::Single, [0x00]),
-      # Replies: EXPORT_CONTACT
-      17_u8 => d(17, :export_contact, Grammar::Single, [0x0b]),
-      # Replies: OK
-      18_u8 => d(18, :import_contact, Grammar::Single, [0x00]),
-      # Replies: No ordinary reply; the companion disconnects.
-      19_u8 => d(19, :reboot, Grammar::Disconnecting, Array(UInt8).new, CommandFlags::Maintenance),
-      # Replies: BATTERY_AND_STORAGE
-      20_u8 => d(20, :get_batt_and_storage, Grammar::Single, [0x0c]),
-      # Replies: OK
-      21_u8 => d(21, :set_tuning_params, Grammar::Single, [0x00]),
-      # Replies: DEVICE_INFO
-      22_u8 => d(22, :device_query, Grammar::Single, [0x0d]),
-      # Replies: PRIVATE_KEY, DISABLED
-      23_u8 => d(23, :export_private_key, Grammar::Single, [0x0e, 0x0f]),
-      # Replies: OK, DISABLED
-      24_u8 => d(24, :import_private_key, Grammar::Single, [0x00, 0x0f], CommandFlags::Maintenance),
-      # Replies: OK
-      25_u8 => d(25, :send_raw_data, Grammar::Single, [0x00]),
-      # Replies: SENT
-      26_u8 => d(26, :send_login, Grammar::Single, [0x06], CommandFlags::RemoteLease | CommandFlags::ScopeSend),
-      # Replies: SENT
-      27_u8 => d(27, :send_status_req, Grammar::Single, [0x06], CommandFlags::RemoteLease | CommandFlags::ScopeSend),
-      # Replies: OK
-      28_u8 => d(28, :has_connection, Grammar::Single, [0x00]),
-      # Replies: OK
-      29_u8 => d(29, :logout, Grammar::Single, [0x00]),
-      # Replies: CONTACT
-      30_u8 => d(30, :get_contact_by_key, Grammar::Single, [0x03]),
-      # Replies: CHANNEL_INFO
-      31_u8 => d(31, :get_channel, Grammar::Single, [0x12], CommandFlags::VerifyIndex),
-      # Replies: OK
-      32_u8 => d(32, :set_channel, Grammar::Single, [0x00]),
-      # Replies: SIGN_START
-      33_u8 => d(33, :sign_start, Grammar::Single, [0x13], CommandFlags::Signing),
-      # Replies: OK
-      34_u8 => d(34, :sign_data, Grammar::Single, [0x00], CommandFlags::Signing),
-      # Replies: SIGNATURE
-      35_u8 => d(35, :sign_finish, Grammar::Single, [0x14], CommandFlags::Signing),
-      # Replies: SENT
-      36_u8 => d(36, :send_trace_path, Grammar::Single, [0x06], CommandFlags::RemoteLease),
-      # Replies: OK
-      37_u8 => d(37, :set_device_pin, Grammar::Single, [0x00]),
-      # Replies: OK
-      38_u8 => d(38, :set_other_params, Grammar::Single, [0x00]),
-      # Replies: TELEMETRY_RESPONSE
-      39_u8 => d(39, :send_telemetry_req, Grammar::SelfTelemetry, [0x8b]),
-      # Replies: CUSTOM_VARS
-      40_u8 => d(40, :get_custom_vars, Grammar::Single, [0x15]),
-      # Replies: OK
-      41_u8 => d(41, :set_custom_var, Grammar::Single, [0x00]),
-      # Replies: ADVERT_PATH
-      42_u8 => d(42, :get_advert_path, Grammar::Single, [0x16]),
-      # Replies: TUNING_PARAMS
-      43_u8 => d(43, :get_tuning_params, Grammar::Single, [0x17]),
-      # Replies: SENT
-      50_u8 => d(50, :send_binary_req, Grammar::Single, [0x06], CommandFlags::RemoteLease | CommandFlags::ScopeSend),
-      # Replies: OK
-      51_u8 => d(51, :factory_reset, Grammar::Disconnecting, [0x00], CommandFlags::Maintenance),
-      # Replies: SENT
-      52_u8 => d(52, :send_path_discovery_req, Grammar::Single, [0x06], CommandFlags::RemoteLease | CommandFlags::ScopeSend),
-      # Replies: OK
-      54_u8 => d(54, :set_flood_scope_key, Grammar::Single, [0x00]),
-      # Replies: OK
-      55_u8 => d(55, :send_control_data, Grammar::Single, [0x00]),
-      # Replies: STATS
-      56_u8 => d(56, :get_stats, Grammar::Single, [0x18], CommandFlags::VerifySubtype),
-      # Replies: SENT
-      57_u8 => d(57, :send_anon_req, Grammar::Single, [0x06], CommandFlags::RemoteLease | CommandFlags::ScopeSend),
-      # Replies: OK
-      58_u8 => d(58, :set_autoadd_config, Grammar::Single, [0x00]),
-      # Replies: AUTOADD_CONFIG
-      59_u8 => d(59, :get_autoadd_config, Grammar::Single, [0x19]),
-      # Replies: ALLOWED_REPEAT_FREQ
-      60_u8 => d(60, :get_allowed_repeat_freq, Grammar::Single, [0x1a]),
-      # Replies: OK
-      61_u8 => d(61, :set_path_hash_mode, Grammar::Single, [0x00]),
-      # Replies: OK
-      62_u8 => d(62, :send_channel_data, Grammar::Single, [0x00], CommandFlags::ScopeSend),
-      # Replies: OK
-      63_u8 => d(63, :set_default_flood_scope, Grammar::Single, [0x00]),
-      # Replies: DEFAULT_FLOOD_SCOPE
-      64_u8 => d(64, :get_default_flood_scope, Grammar::Single, [0x1c]),
-      # Replies: OK
-      65_u8 => d(65, :send_raw_packet, Grammar::Single, [0x00]),
+      CMD_APP_START               => d(CMD_APP_START, :app_start, Grammar::Single, [RESP_SELF_INFO]),
+      CMD_SEND_TXT_MSG            => d(CMD_SEND_TXT_MSG, :send_txt_msg, Grammar::Single, [RESP_SENT], CommandFlags::ScopeSend),
+      CMD_SEND_CHANNEL_TXT_MSG    => d(CMD_SEND_CHANNEL_TXT_MSG, :send_channel_txt_msg, Grammar::Single, [RESP_OK], CommandFlags::ScopeSend),
+      CMD_GET_CONTACTS            => d(CMD_GET_CONTACTS, :get_contacts, Grammar::Contacts, [RESP_CONTACTS_START, RESP_CONTACT, RESP_END_OF_CONTACTS]),
+      CMD_GET_DEVICE_TIME         => d(CMD_GET_DEVICE_TIME, :get_device_time, Grammar::Single, [RESP_CURRENT_TIME]),
+      CMD_SET_DEVICE_TIME         => d(CMD_SET_DEVICE_TIME, :set_device_time, Grammar::Single, [RESP_OK]),
+      CMD_SEND_SELF_ADVERT        => d(CMD_SEND_SELF_ADVERT, :send_self_advert, Grammar::Single, [RESP_OK]),
+      CMD_SET_ADVERT_NAME         => d(CMD_SET_ADVERT_NAME, :set_advert_name, Grammar::Single, [RESP_OK]),
+      CMD_ADD_UPDATE_CONTACT      => d(CMD_ADD_UPDATE_CONTACT, :add_update_contact, Grammar::Single, [RESP_OK]),
+      CMD_SYNC_NEXT_MESSAGE       => d(CMD_SYNC_NEXT_MESSAGE, :sync_next_message, Grammar::Inbox, [RESP_CONTACT_MESSAGE, RESP_CHANNEL_MESSAGE, RESP_NO_MORE_MESSAGES, RESP_CONTACT_MESSAGE_V3, RESP_CHANNEL_MESSAGE_V3, RESP_CHANNEL_DATA]),
+      CMD_SET_RADIO_PARAMS        => d(CMD_SET_RADIO_PARAMS, :set_radio_params, Grammar::Single, [RESP_OK]),
+      CMD_SET_RADIO_TX_POWER      => d(CMD_SET_RADIO_TX_POWER, :set_radio_tx_power, Grammar::Single, [RESP_OK]),
+      CMD_RESET_PATH              => d(CMD_RESET_PATH, :reset_path, Grammar::Single, [RESP_OK]),
+      CMD_SET_ADVERT_LATLON       => d(CMD_SET_ADVERT_LATLON, :set_advert_latlon, Grammar::Single, [RESP_OK]),
+      CMD_REMOVE_CONTACT          => d(CMD_REMOVE_CONTACT, :remove_contact, Grammar::Single, [RESP_OK]),
+      CMD_SHARE_CONTACT           => d(CMD_SHARE_CONTACT, :share_contact, Grammar::Single, [RESP_OK]),
+      CMD_EXPORT_CONTACT          => d(CMD_EXPORT_CONTACT, :export_contact, Grammar::Single, [RESP_EXPORT_CONTACT]),
+      CMD_IMPORT_CONTACT          => d(CMD_IMPORT_CONTACT, :import_contact, Grammar::Single, [RESP_OK]),
+      CMD_REBOOT                  => d(CMD_REBOOT, :reboot, Grammar::Disconnecting, Array(UInt8).new, CommandFlags::Maintenance),
+      CMD_GET_BATT_AND_STORAGE    => d(CMD_GET_BATT_AND_STORAGE, :get_batt_and_storage, Grammar::Single, [RESP_BATTERY_AND_STORAGE]),
+      CMD_SET_TUNING_PARAMS       => d(CMD_SET_TUNING_PARAMS, :set_tuning_params, Grammar::Single, [RESP_OK]),
+      CMD_DEVICE_QUERY            => d(CMD_DEVICE_QUERY, :device_query, Grammar::Single, [RESP_DEVICE_INFO]),
+      CMD_EXPORT_PRIVATE_KEY      => d(CMD_EXPORT_PRIVATE_KEY, :export_private_key, Grammar::Single, [RESP_PRIVATE_KEY, RESP_DISABLED]),
+      CMD_IMPORT_PRIVATE_KEY      => d(CMD_IMPORT_PRIVATE_KEY, :import_private_key, Grammar::Single, [RESP_OK, RESP_DISABLED], CommandFlags::Maintenance),
+      CMD_SEND_RAW_DATA           => d(CMD_SEND_RAW_DATA, :send_raw_data, Grammar::Single, [RESP_OK]),
+      CMD_SEND_LOGIN              => d(CMD_SEND_LOGIN, :send_login, Grammar::Single, [RESP_SENT], CommandFlags::RemoteLease | CommandFlags::ScopeSend),
+      CMD_SEND_STATUS_REQ         => d(CMD_SEND_STATUS_REQ, :send_status_req, Grammar::Single, [RESP_SENT], CommandFlags::RemoteLease | CommandFlags::ScopeSend),
+      CMD_HAS_CONNECTION          => d(CMD_HAS_CONNECTION, :has_connection, Grammar::Single, [RESP_OK]),
+      CMD_LOGOUT                  => d(CMD_LOGOUT, :logout, Grammar::Single, [RESP_OK]),
+      CMD_GET_CONTACT_BY_KEY      => d(CMD_GET_CONTACT_BY_KEY, :get_contact_by_key, Grammar::Single, [RESP_CONTACT]),
+      CMD_GET_CHANNEL             => d(CMD_GET_CHANNEL, :get_channel, Grammar::Single, [RESP_CHANNEL_INFO], CommandFlags::VerifyIndex),
+      CMD_SET_CHANNEL             => d(CMD_SET_CHANNEL, :set_channel, Grammar::Single, [RESP_OK]),
+      CMD_SIGN_START              => d(CMD_SIGN_START, :sign_start, Grammar::Single, [RESP_SIGN_START], CommandFlags::Signing),
+      CMD_SIGN_DATA               => d(CMD_SIGN_DATA, :sign_data, Grammar::Single, [RESP_OK], CommandFlags::Signing),
+      CMD_SIGN_FINISH             => d(CMD_SIGN_FINISH, :sign_finish, Grammar::Single, [RESP_SIGNATURE], CommandFlags::Signing),
+      CMD_SEND_TRACE_PATH         => d(CMD_SEND_TRACE_PATH, :send_trace_path, Grammar::Single, [RESP_SENT], CommandFlags::RemoteLease),
+      CMD_SET_DEVICE_PIN          => d(CMD_SET_DEVICE_PIN, :set_device_pin, Grammar::Single, [RESP_OK]),
+      CMD_SET_OTHER_PARAMS        => d(CMD_SET_OTHER_PARAMS, :set_other_params, Grammar::Single, [RESP_OK]),
+      CMD_SEND_TELEMETRY_REQ      => d(CMD_SEND_TELEMETRY_REQ, :send_telemetry_req, Grammar::SelfTelemetry, [PUSH_TELEMETRY_RESPONSE]),
+      CMD_GET_CUSTOM_VARS         => d(CMD_GET_CUSTOM_VARS, :get_custom_vars, Grammar::Single, [RESP_CUSTOM_VARS]),
+      CMD_SET_CUSTOM_VAR          => d(CMD_SET_CUSTOM_VAR, :set_custom_var, Grammar::Single, [RESP_OK]),
+      CMD_GET_ADVERT_PATH         => d(CMD_GET_ADVERT_PATH, :get_advert_path, Grammar::Single, [RESP_ADVERT_PATH]),
+      CMD_GET_TUNING_PARAMS       => d(CMD_GET_TUNING_PARAMS, :get_tuning_params, Grammar::Single, [RESP_TUNING_PARAMS]),
+      CMD_SEND_BINARY_REQ         => d(CMD_SEND_BINARY_REQ, :send_binary_req, Grammar::Single, [RESP_SENT], CommandFlags::RemoteLease | CommandFlags::ScopeSend),
+      CMD_FACTORY_RESET           => d(CMD_FACTORY_RESET, :factory_reset, Grammar::Disconnecting, [RESP_OK], CommandFlags::Maintenance),
+      CMD_SEND_PATH_DISCOVERY_REQ => d(CMD_SEND_PATH_DISCOVERY_REQ, :send_path_discovery_req, Grammar::Single, [RESP_SENT], CommandFlags::RemoteLease | CommandFlags::ScopeSend),
+      CMD_SET_FLOOD_SCOPE_KEY     => d(CMD_SET_FLOOD_SCOPE_KEY, :set_flood_scope_key, Grammar::Single, [RESP_OK]),
+      CMD_SEND_CONTROL_DATA       => d(CMD_SEND_CONTROL_DATA, :send_control_data, Grammar::Single, [RESP_OK]),
+      CMD_GET_STATS               => d(CMD_GET_STATS, :get_stats, Grammar::Single, [RESP_STATS], CommandFlags::VerifySubtype),
+      CMD_SEND_ANON_REQ           => d(CMD_SEND_ANON_REQ, :send_anon_req, Grammar::Single, [RESP_SENT], CommandFlags::RemoteLease | CommandFlags::ScopeSend),
+      CMD_SET_AUTOADD_CONFIG      => d(CMD_SET_AUTOADD_CONFIG, :set_autoadd_config, Grammar::Single, [RESP_OK]),
+      CMD_GET_AUTOADD_CONFIG      => d(CMD_GET_AUTOADD_CONFIG, :get_autoadd_config, Grammar::Single, [RESP_AUTOADD_CONFIG]),
+      CMD_GET_ALLOWED_REPEAT_FREQ => d(CMD_GET_ALLOWED_REPEAT_FREQ, :get_allowed_repeat_freq, Grammar::Single, [RESP_ALLOWED_REPEAT_FREQ]),
+      CMD_SET_PATH_HASH_MODE      => d(CMD_SET_PATH_HASH_MODE, :set_path_hash_mode, Grammar::Single, [RESP_OK]),
+      CMD_SEND_CHANNEL_DATA       => d(CMD_SEND_CHANNEL_DATA, :send_channel_data, Grammar::Single, [RESP_OK], CommandFlags::ScopeSend),
+      CMD_SET_DEFAULT_FLOOD_SCOPE => d(CMD_SET_DEFAULT_FLOOD_SCOPE, :set_default_flood_scope, Grammar::Single, [RESP_OK]),
+      CMD_GET_DEFAULT_FLOOD_SCOPE => d(CMD_GET_DEFAULT_FLOOD_SCOPE, :get_default_flood_scope, Grammar::Single, [RESP_DEFAULT_FLOOD_SCOPE]),
+      CMD_SEND_RAW_PACKET         => d(CMD_SEND_RAW_PACKET, :send_raw_packet, Grammar::Single, [RESP_OK]),
     }
 
     def self.descriptor(payload : Bytes) : CommandDescriptor?
@@ -372,8 +549,8 @@ class MeshCoreTCPMux
       desc = DESCRIPTORS[payload[0]]?
       return nil unless desc
       # Telemetry opcode 39 is two distinct native commands selected by length.
-      return desc unless payload[0] == 39 && payload.size != 4
-      CommandDescriptor.new(39_u8, :send_telemetry_req, Grammar::Single, [0x06_u8], CommandFlags::RemoteLease | CommandFlags::ScopeSend)
+      return desc unless payload[0] == CMD_SEND_TELEMETRY_REQ && payload.size != 4
+      CommandDescriptor.new(CMD_SEND_TELEMETRY_REQ, :send_telemetry_req, Grammar::Single, [RESP_SENT], CommandFlags::RemoteLease | CommandFlags::ScopeSend)
     end
 
     def self.validate_command(payload : Bytes) : ValidationResult
@@ -392,52 +569,57 @@ class MeshCoreTCPMux
       return false if p.empty? || p.size > MAX_PAYLOAD
       n = p.size
       case p[0]
-      when 1 # APP_START: opcode + seven reserved bytes, then optional app name.
+      when CMD_APP_START # Opcode + seven reserved bytes, then optional app name.
         n >= 8
-      when 2 # SEND_TXT_MSG: type, attempt, timestamp, six-byte peer prefix, and at least one body byte.
+      when CMD_SEND_TXT_MSG # Type, attempt, timestamp, six-byte peer prefix, and at least one body byte.
         n >= 14
-      when 3 # SEND_CHANNEL_TXT_MSG: type, channel, and four-byte timestamp before optional text.
+      when CMD_SEND_CHANNEL_TXT_MSG # Type, channel, and four-byte timestamp before optional text.
         n >= 7
-      when 4 # GET_CONTACTS: optional four-byte modified-since timestamp.
+      when CMD_GET_CONTACTS # Optional four-byte modified-since timestamp.
         n == 1 || n >= 5
-      when 5, 10, 20, 23, 33, 35, 40, 43, 59, 60, 64
+      when CMD_GET_DEVICE_TIME, CMD_SYNC_NEXT_MESSAGE, CMD_GET_BATT_AND_STORAGE,
+           CMD_EXPORT_PRIVATE_KEY, CMD_SIGN_START, CMD_SIGN_FINISH,
+           CMD_GET_CUSTOM_VARS, CMD_GET_TUNING_PARAMS, CMD_GET_AUTOADD_CONFIG,
+           CMD_GET_ALLOWED_REPEAT_FREQ, CMD_GET_DEFAULT_FLOOD_SCOPE
         # GET_DEVICE_TIME, SYNC_NEXT_MESSAGE, GET_BATT_AND_STORAGE, EXPORT_PRIVATE_KEY, SIGN_START,
         # SIGN_FINISH, GET_CUSTOM_VARS, GET_TUNING_PARAMS, GET_AUTOADD_CONFIG, GET_ALLOWED_REPEAT_FREQ,
         # GET_DEFAULT_FLOOD_SCOPE: opcode-only commands.
         n >= 1
-      when 6 # SET_DEVICE_TIME: four-byte device time.
+      when CMD_SET_DEVICE_TIME # Four-byte device time.
         n >= 5
-      when 7 # SEND_SELF_ADVERT: advert parameters are optional.
+      when CMD_SEND_SELF_ADVERT # Advert parameters are optional.
         n >= 1
-      when 8 # SET_ADVERT_NAME: at least one name byte.
+      when CMD_SET_ADVERT_NAME # At least one name byte.
         n >= 2
-      when 9 # ADD_UPDATE_CONTACT: accept native contact record variants; byte 35 encodes its outbound path.
+      when CMD_ADD_UPDATE_CONTACT # Accept native contact record variants; byte 35 encodes its outbound path.
         return false unless n == 136 || n == 144 || n >= 148
         # 0xff means no learned outbound path; otherwise decode its count and hash width.
-        p[35] == 0xff || !normal_encoded_path_bytes(p[35]).nil?
-      when 11 # SET_RADIO_PARAMS: ten bytes of radio parameters.
+        p[35] == NO_PATH_ENCODING || !normal_encoded_path_bytes(p[35]).nil?
+      when CMD_SET_RADIO_PARAMS # Ten bytes of radio parameters.
         n >= 11
-      when 12 # SET_RADIO_TX_POWER: one transmit-power byte.
+      when CMD_SET_RADIO_TX_POWER # One transmit-power byte.
         n >= 2
-      when 13, 15, 16, 27, 28, 29, 30
+      when CMD_RESET_PATH, CMD_REMOVE_CONTACT, CMD_SHARE_CONTACT,
+           CMD_SEND_STATUS_REQ, CMD_HAS_CONNECTION, CMD_LOGOUT,
+           CMD_GET_CONTACT_BY_KEY
         # RESET_PATH, REMOVE_CONTACT, SHARE_CONTACT, SEND_STATUS_REQ, HAS_CONNECTION, LOGOUT,
         # GET_CONTACT_BY_KEY: 32-byte public key.
         n >= 33
-      when 14 # SET_ADVERT_LATLON: two four-byte coordinates, optionally followed by altitude.
+      when CMD_SET_ADVERT_LATLON # Two four-byte coordinates, optionally followed by altitude.
         n == 9 || n >= 13
-      when 17 # EXPORT_CONTACT: no key means self; otherwise require a 32-byte key.
+      when CMD_EXPORT_CONTACT # No key means self; otherwise require a 32-byte key.
         n == 1 || n >= 33
-      when 18 # IMPORT_CONTACT: at least 98 bytes of exported advertisement.
+      when CMD_IMPORT_CONTACT # At least 98 bytes of exported advertisement.
         n >= 99
-      when 19 # REBOOT: exact reboot confirmation string.
+      when CMD_REBOOT # Exact reboot confirmation string.
         n == 7 && String.new(p[1, 6]) == "reboot"
-      when 21 # SET_TUNING_PARAMS: eight tuning-parameter bytes.
+      when CMD_SET_TUNING_PARAMS # Eight tuning-parameter bytes.
         n >= 9
-      when 22 # DEVICE_QUERY: one client protocol-target byte.
+      when CMD_DEVICE_QUERY # One client protocol-target byte.
         n >= 2
-      when 24 # IMPORT_PRIVATE_KEY: 64-byte private key.
+      when CMD_IMPORT_PRIVATE_KEY # 64-byte private key.
         n >= 65
-      when 25 # SEND_RAW_DATA: signed path length, path bytes, and at least four data bytes.
+      when CMD_SEND_RAW_DATA # Signed path length, path bytes, and at least four data bytes.
         return false if n < 6
         # Native command parsing treats this byte as a literal path-byte count,
         # but sendDirect later interprets its upper two bits as the ordinary
@@ -445,51 +627,51 @@ class MeshCoreTCPMux
         return false if p[1] >= 0x40
         path_len = p[1].to_i
         2 + path_len + 4 <= n
-      when 26 # SEND_LOGIN: 32-byte peer key, followed by optional credentials.
+      when CMD_SEND_LOGIN # 32-byte peer key, followed by optional credentials.
         n >= 33
-      when 31 # GET_CHANNEL: one channel index.
+      when CMD_GET_CHANNEL # One channel index.
         n >= 2
-      when 32 # SET_CHANNEL: channel index, 32-byte name, 16-byte key, and up to 15 ignored trailing bytes.
+      when CMD_SET_CHANNEL # Channel index, 32-byte name, 16-byte key, and up to 15 ignored trailing bytes.
         n >= 50 && n < 66
-      when 34 # SIGN_DATA: at least one signing-data byte.
+      when CMD_SIGN_DATA # At least one signing-data byte.
         n >= 2
-      when 36 # SEND_TRACE_PATH: tag, auth, flags, then whole path hashes.
+      when CMD_SEND_TRACE_PATH # Tag, auth, flags, then whole path hashes.
         return false unless n > 10 && n - 10 < 171
         # Ten-byte command prefix; low two flag bits select log2(hash width).
-        width_shift = p[9] & 0x03
+        width_shift = p[9] & PATH_WIDTH_SHIFT_MASK
         path_bytes = n - 10
         path_bytes % (1 << width_shift) == 0 && (path_bytes >> width_shift) <= MAX_PATH_SIZE
-      when 37 # SET_DEVICE_PIN: four-byte PIN.
+      when CMD_SET_DEVICE_PIN # Four-byte PIN.
         n >= 5
-      when 38 # SET_OTHER_PARAMS: at least one parameter byte.
+      when CMD_SET_OTHER_PARAMS # At least one parameter byte.
         n >= 2
-      when 39 # SEND_TELEMETRY_REQ: three option bytes; remote form adds a 32-byte peer key.
+      when CMD_SEND_TELEMETRY_REQ # Three option bytes; remote form adds a 32-byte peer key.
         n == 4 || n >= 36
-      when 41 # SET_CUSTOM_VAR: at least three assignment bytes, including a ':' separator.
+      when CMD_SET_CUSTOM_VAR # At least three assignment bytes, including a ':' separator.
         n >= 4 && p[1..].includes?(':'.ord.to_u8)
-      when 42 # GET_ADVERT_PATH: 32-byte key plus selector.
+      when CMD_GET_ADVERT_PATH # 32-byte key plus selector.
         n >= 34
-      when 50, 57 # SEND_BINARY_REQ, SEND_ANON_REQ: 32-byte peer key and at least one request byte.
+      when CMD_SEND_BINARY_REQ, CMD_SEND_ANON_REQ # 32-byte peer key and at least one request byte.
         n >= 34
-      when 51 # FACTORY_RESET: exact reset confirmation string.
+      when CMD_FACTORY_RESET # Exact reset confirmation string.
         n == 6 && String.new(p[1, 5]) == "reset"
-      when 52 # SEND_PATH_DISCOVERY_REQ: zero reserved byte and 32-byte peer key.
+      when CMD_SEND_PATH_DISCOVERY_REQ # Zero reserved byte and 32-byte peer key.
         n >= 34 && p[1] == 0
-      when 54 # SET_FLOOD_SCOPE_KEY: mode 0 uses default or explicit 16-byte key; mode 1 is unscoped.
+      when CMD_SET_FLOOD_SCOPE_KEY # Mode 0 uses default or explicit 16-byte key; mode 1 is unscoped.
         (n == 2 && (p[1] == 0 || p[1] == 1)) || (n == 18 && p[1] == 0)
-      when 55 # SEND_CONTROL_DATA: control data must have its high flag bit set.
+      when CMD_SEND_CONTROL_DATA # Control data must have its high flag bit set.
         n >= 2 && (p[1] & 0x80) != 0
-      when 56 # GET_STATS: one stats subtype: 0 core, 1 radio, or 2 packets.
+      when CMD_GET_STATS # One stats subtype: 0 core, 1 radio, or 2 packets.
         n >= 2 && p[1] <= 2
-      when 58 # SET_AUTOADD_CONFIG: one configuration byte.
+      when CMD_SET_AUTOADD_CONFIG # One configuration byte.
         n >= 2
-      when 61 # SET_PATH_HASH_MODE: zero reserved byte, then hash-width mode 0–2.
+      when CMD_SET_PATH_HASH_MODE # Zero reserved byte, then hash-width mode 0–2.
         n >= 3 && p[1] == 0 && p[2] < 3
-      when 62 # SEND_CHANNEL_DATA: channel, encoded path, and data-type fields.
+      when CMD_SEND_CHANNEL_DATA # Channel, encoded path, and data-type fields.
         channel_data_command_valid?(p)
-      when 63 # SET_DEFAULT_FLOOD_SCOPE: empty clear command or named scope and key.
+      when CMD_SET_DEFAULT_FLOOD_SCOPE # Empty clear command or named scope and key.
         default_scope_command_valid?(p)
-      when 65 # SEND_RAW_PACKET: at least three raw-packet header bytes.
+      when CMD_SEND_RAW_PACKET # At least three raw-packet header bytes.
         n >= 4
       else false
       end
@@ -500,7 +682,7 @@ class MeshCoreTCPMux
       # The 0xff path sentinel means no explicit path; other values encode hop count and hash width.
       return false if p.size < 5
       encoded = p[2]
-      path_bytes = if encoded == 0xff
+      path_bytes = if encoded == NO_PATH_ENCODING
                      0
                    else
                      normal_encoded_path_bytes(encoded) || return false
@@ -526,7 +708,7 @@ class MeshCoreTCPMux
       raise ProtocolError.new("empty upstream payload") if payload.empty?
       raise ProtocolError.new("oversized upstream payload") if payload.size > MAX_PAYLOAD
       code = payload[0]
-      if code == 0x01
+      if code == RESP_ERR
         raise ProtocolError.new("malformed ERR response") unless payload.size == 2
         return ResponseDisposition::Complete
       end
@@ -535,17 +717,17 @@ class MeshCoreTCPMux
       end
       validate_response_shape!(payload)
       if descriptor.grammar.contacts?
-        expected = phase == 0 ? code == 0x02 : phase == 1 && (code == 0x03 || code == 0x04)
+        expected = phase == 0 ? code == RESP_CONTACTS_START : phase == 1 && (code == RESP_CONTACT || code == RESP_END_OF_CONTACTS)
         raise ProtocolError.new("out-of-order contacts response") unless expected
       end
       if command
-        if code == 0x12 && descriptor.flags.includes?(CommandFlags::VerifyIndex)
+        if code == RESP_CHANNEL_INFO && descriptor.flags.includes?(CommandFlags::VerifyIndex)
           raise ProtocolError.new("channel response index mismatch") unless payload[1] == command[1]
-        elsif code == 0x18 && descriptor.flags.includes?(CommandFlags::VerifySubtype)
+        elsif code == RESP_STATS && descriptor.flags.includes?(CommandFlags::VerifySubtype)
           raise ProtocolError.new("stats response subtype mismatch") unless payload[1] == command[1]
         end
       end
-      descriptor.grammar.contacts? && code != 0x04 ? ResponseDisposition::Progress : ResponseDisposition::Complete
+      descriptor.grammar.contacts? && code != RESP_END_OF_CONTACTS ? ResponseDisposition::Progress : ResponseDisposition::Complete
     end
 
     def self.validate_response_shape!(p : Bytes) : Nil
@@ -555,79 +737,79 @@ class MeshCoreTCPMux
       raise ProtocolError.new("oversized upstream payload") if p.size > MAX_PAYLOAD
       n = p.size
       ok = case p[0]
-           when 0x00, 0x0a, 0x0f # OK, NO_MORE_MESSAGES, DISABLED: opcode only.
+           when RESP_OK, RESP_NO_MORE_MESSAGES, RESP_DISABLED # Opcode only.
              n == 1
-           when 0x01 # ERR: opcode and error reason.
+           when RESP_ERR # Opcode and error reason.
              n == 2
-           when 0x02, 0x04, 0x09 # CONTACTS_START, END_OF_CONTACTS, CURRENT_TIME: opcode and four-byte count/time value.
+           when RESP_CONTACTS_START, RESP_END_OF_CONTACTS, RESP_CURRENT_TIME # Opcode and four-byte count/time value.
              n == 5
-           when 0x03, 0x8a # CONTACT, NEW_ADVERT: complete native contact record.
+           when RESP_CONTACT, PUSH_NEW_ADVERT # Complete native contact record.
              n == 148
-           when 0x05 # SELF_INFO: fixed self-info prefix; extensions allowed.
+           when RESP_SELF_INFO # Fixed self-info prefix; extensions allowed.
              n >= 58
-           when 0x06 # SENT: opcode, type, four-byte token, four-byte timeout.
+           when RESP_SENT # Type, four-byte token, four-byte timeout.
              n == 10
-           when 0x07 # CONTACT_MESSAGE: legacy DM header; type at byte 8.
+           when RESP_CONTACT_MESSAGE # Legacy DM header; type at byte 8.
              contact_text_response_valid?(p, 13, 8)
-           when 0x08 # CHANNEL_MESSAGE: legacy channel header plus optional text.
+           when RESP_CHANNEL_MESSAGE # Legacy channel header plus optional text.
              n >= 8
-           when 0x0b # EXPORT_CONTACT: exported contact payload must not be empty.
+           when RESP_EXPORT_CONTACT # Exported contact payload must not be empty.
              n >= 2
-           when 0x0c # BATTERY_AND_STORAGE: battery/storage fields total ten bytes after opcode.
+           when RESP_BATTERY_AND_STORAGE # Battery/storage fields total ten bytes after opcode.
              n == 11
-           when 0x0d # DEVICE_INFO: fixed native device-information record.
+           when RESP_DEVICE_INFO # Fixed native device-information record.
              n == 82
-           when 0x0e, 0x14 # PRIVATE_KEY, SIGNATURE: 64-byte key/signature after opcode.
+           when RESP_PRIVATE_KEY, RESP_SIGNATURE # 64-byte key/signature after opcode.
              n == 65
-           when 0x10 # CONTACT_MESSAGE_V3: V3 DM adds SNR and two reserved bytes; type at byte 11.
+           when RESP_CONTACT_MESSAGE_V3 # V3 DM adds SNR and two reserved bytes; type at byte 11.
              contact_text_response_valid?(p, 16, 11)
-           when 0x11 # CHANNEL_MESSAGE_V3: V3 channel header plus optional text.
+           when RESP_CHANNEL_MESSAGE_V3 # V3 channel header plus optional text.
              n >= 11
-           when 0x12 # CHANNEL_INFO: index, 32-byte name, and 16-byte key.
+           when RESP_CHANNEL_INFO # Index, 32-byte name, and 16-byte key.
              n == 50
-           when 0x13 # SIGN_START: reserved byte and four-byte signing limit.
+           when RESP_SIGN_START # Reserved byte and four-byte signing limit.
              n == 6
-           when 0x15 # CUSTOM_VARS: custom variable list may be empty.
+           when RESP_CUSTOM_VARS # Custom variable list may be empty.
              n >= 1
-           when 0x16 # ADVERT_PATH: encoded path length must agree with body.
+           when RESP_ADVERT_PATH # Encoded path length must agree with body.
              advert_path_response_valid?(p)
-           when 0x17 # TUNING_PARAMS: eight tuning bytes.
+           when RESP_TUNING_PARAMS # Eight tuning bytes.
              n == 9
-           when 0x18 # STATS: subtype selects a fixed stats layout.
+           when RESP_STATS # Subtype selects a fixed stats layout.
              stats_response_valid?(p)
-           when 0x19 # AUTOADD_CONFIG: two configuration bytes.
+           when RESP_AUTOADD_CONFIG # Two configuration bytes.
              n == 3
-           when 0x1a # ALLOWED_REPEAT_FREQ: zero or more pairs of four-byte frequency bounds.
+           when RESP_ALLOWED_REPEAT_FREQ # Zero or more pairs of four-byte frequency bounds.
              n >= 1 && (n - 1) % 8 == 0
-           when 0x1b # CHANNEL_DATA: byte 8 is body length, following an eight-byte metadata prefix.
+           when RESP_CHANNEL_DATA # Byte 8 is body length, following an eight-byte metadata prefix.
              n >= 9 && n == 9 + p[8]
-           when 0x1c # DEFAULT_FLOOD_SCOPE: empty scope or 31-byte name and 16-byte key.
+           when RESP_DEFAULT_FLOOD_SCOPE # Empty scope or 31-byte name and 16-byte key.
              n == 1 || n == 48
-           when 0x80, 0x81 # ADVERT, PATH_UPDATED: opcode and 32-byte public key.
+           when PUSH_ADVERT, PUSH_PATH_UPDATED # Opcode and 32-byte public key.
              n == 33
-           when 0x82 # SEND_CONFIRMED: four-byte acknowledgement token and four-byte round-trip time.
+           when PUSH_SEND_CONFIRMED # Four-byte acknowledgement token and four-byte round-trip time.
              n == 9
-           when 0x84, 0x8e # RAW_DATA, CONTROL_DATA: raw/control metadata prefix.
+           when PUSH_RAW_DATA, PUSH_CONTROL_DATA # Raw/control metadata prefix.
              n >= 4
-           when 0x88 # LOG_RX_DATA: SNR and RSSI, then opaque packet bytes.
+           when PUSH_LOG_RX_DATA # SNR and RSSI, then opaque packet bytes.
              n >= 3
-           when 0x83, 0x90 # MSG_WAITING, CONTACTS_FULL: notification has no body.
+           when PUSH_MSG_WAITING, PUSH_CONTACTS_FULL # Notification has no body.
              n == 1
-           when 0x8f # CONTACT_DELETED: 32-byte deleted contact key.
+           when PUSH_CONTACT_DELETED # 32-byte deleted contact key.
              n == 33
-           when 0x85 # LOGIN_SUCCESS: legacy eight-byte prefix or complete extended form (at least 14).
+           when PUSH_LOGIN_SUCCESS # Legacy eight-byte prefix or complete extended form (at least 14).
              n == 8 || n >= 14
-           when 0x86, 0x8b # LOGIN_FAILURE, TELEMETRY_RESPONSE: reserved/metadata byte and six-byte peer prefix.
+           when PUSH_LOGIN_FAILURE, PUSH_TELEMETRY_RESPONSE # Reserved/metadata byte and six-byte peer prefix.
              n >= 8
-           when 0x87 # STATUS_RESPONSE: peer prefix and status data.
+           when PUSH_STATUS_RESPONSE # Peer prefix and status data.
              n >= 9
-           when 0x8d # PATH_DISCOVERY_RESPONSE: outbound and inbound encoded paths must both fit exactly.
+           when PUSH_PATH_DISCOVERY_RESPONSE # Outbound and inbound encoded paths must both fit exactly.
              path_discovery_response_valid?(p)
-           when 0x89 # TRACE_DATA: path hashes and per-hop SNR counts must agree.
+           when PUSH_TRACE_DATA # Path hashes and per-hop SNR counts must agree.
              trace_response_valid?(p)
-           when 0x8c # BINARY_RESPONSE: reserved byte and four-byte response tag.
+           when PUSH_BINARY_RESPONSE # Reserved byte and four-byte response tag.
              n >= 6
-           else p[0] >= 0x80 # unknown pushes are opaque; unknown ordinary responses are fatal
+           else p[0] >= PUSH_ADVERT # Unknown pushes are opaque; unknown ordinary responses are fatal.
            end
       raise ProtocolError.new("malformed response 0x#{p[0].to_s(16)} (#{n} bytes)") unless ok
     end
@@ -636,11 +818,11 @@ class MeshCoreTCPMux
       # STATS byte 1 selects core, radio, or packet counters; reject unknown subtypes and truncated layouts.
       return false if p.size < 2
       case p[1]
-      when 0 # core statistics.
+      when STATS_TYPE_CORE # Core statistics.
         p.size == 11
-      when 1 # radio statistics.
+      when STATS_TYPE_RADIO # Radio statistics.
         p.size == 14
-      when 2 # packet statistics.
+      when STATS_TYPE_PACKET # Packet statistics.
         p.size == 30
       else false
       end
@@ -651,15 +833,18 @@ class MeshCoreTCPMux
       # and a final SNR byte. Byte 2 counts path bytes; the low two bits of byte 3 encode log2(hash width).
       return false if p.size < 13
       path_bytes = p[2].to_i
-      shift = p[3] & 0x03
-      path_bytes % (1 << shift) == 0 && p.size == 12 + path_bytes + (path_bytes >> shift) + 1
+      shift = p[3] & PATH_WIDTH_SHIFT_MASK
+      hash_width = 1 << shift
+      return false unless path_bytes % hash_width == 0
+      hop_count = path_bytes // hash_width
+      hop_count <= MAX_PATH_SIZE && p.size == 12 + path_bytes + hop_count + 1
     end
 
     private def self.normal_encoded_path_bytes(encoded : UInt8) : Int32?
       # Packet::getPathHashSize() in the pinned native firmware defines ordinary
       # path width as upper-bits + 1 (1, 2, 3; 4 is reserved). Trace flags are a
       # distinct format whose low bits select powers-of-two widths.
-      count = (encoded & 0x3f).to_i # Low six bits count hops; upper two bits encode width minus one.
+      count = (encoded & PATH_COUNT_MASK).to_i # Low six bits count hops; upper two bits encode width minus one.
       width = (encoded >> 6).to_i + 1
       return nil if width == 4
       bytes = count * width
@@ -700,13 +885,13 @@ class MeshCoreTCPMux
       validate_response_shape!(payload)
       return payload.dup if target_version >= 3
       case payload[0]
-      when 0x10 # CONTACT_MESSAGE_V3 -> legacy CONTACT_MESSAGE (0x07).
+      when RESP_CONTACT_MESSAGE_V3
         Bytes.new(payload.size - 3) do |i|
-          i == 0 ? 0x07_u8 : payload[i + 3]
+          i == 0 ? RESP_CONTACT_MESSAGE : payload[i + 3]
         end
-      when 0x11 # CHANNEL_MESSAGE_V3 -> legacy CHANNEL_MESSAGE (0x08).
+      when RESP_CHANNEL_MESSAGE_V3
         Bytes.new(payload.size - 3) do |i|
-          i == 0 ? 0x08_u8 : payload[i + 3]
+          i == 0 ? RESP_CHANNEL_MESSAGE : payload[i + 3]
         end
       else
         payload.dup
@@ -716,7 +901,7 @@ class MeshCoreTCPMux
     def self.plain_dm?(payload : Bytes) : Bool
       # SEND_TXT_MSG (2) type 0 uses the companion's acknowledgement ring;
       # other text types do not reserve a plain-message acknowledgement slot.
-      payload[0]? == 2 && payload[1]? == 0
+      payload[0]? == CMD_SEND_TXT_MSG && payload[1]? == 0
     end
 
     def self.app_start_payload(app_name : String, reserved : Bytes = Bytes.new(7, 0_u8)) : Bytes
@@ -726,7 +911,7 @@ class MeshCoreTCPMux
       raise ArgumentError.new("APP_START payload exceeds native profile") if 8 + name.size > MAX_PAYLOAD
       Bytes.new(8 + name.size) do |i|
         if i == 0
-          1_u8
+          CMD_APP_START
         elsif i < 8
           reserved[i - 1]
         else
@@ -737,14 +922,14 @@ class MeshCoreTCPMux
 
     def self.device_query_payload(target : UInt8 = NATIVE_PROTOCOL_LEVEL) : Bytes
       # Build DEVICE_QUERY (22) with the requested companion protocol target.
-      Bytes[22_u8, target]
+      Bytes[CMD_DEVICE_QUERY, target]
     end
 
     def self.normalize_device_query(payload : Bytes, target : UInt8 = NATIVE_PROTOCOL_LEVEL) : Bytes
       # Keep the upstream on our native protocol target, regardless of the downstream client's version.
       # Broker remembers the original target and downgrades that client's inbox separately.
       result = validate_command(payload)
-      raise ArgumentError.new("malformed DEVICE_QUERY") unless result.valid? && payload[0] == 22
+      raise ArgumentError.new("malformed DEVICE_QUERY") unless result.valid? && payload[0] == CMD_DEVICE_QUERY
       copy = payload.dup
       copy[1] = target
       copy
@@ -753,14 +938,14 @@ class MeshCoreTCPMux
     def self.validate_self_info!(payload : Bytes) : Bytes
       # SELF_INFO (0x05) carries the companion's 32-byte public key at offset 4.
       # Return a copy for identity checks across reconnects; never expose the full reply in logs.
-      raise ProtocolError.new("malformed SELF_INFO") unless payload.size >= 58 && payload[0] == 0x05
+      raise ProtocolError.new("malformed SELF_INFO") unless payload.size >= 58 && payload[0] == RESP_SELF_INFO
       payload[4, 32].dup
     end
 
     def self.validate_device_info!(payload : Bytes, expected_protocol : UInt8 = NATIVE_PROTOCOL_LEVEL) : UInt8
       # DEVICE_INFO (0x0d) is 82 bytes; byte 1 is the firmware protocol level.
       # Reject incompatible firmware before admitting clients.
-      raise ProtocolError.new("malformed DEVICE_INFO") unless payload.size == 82 && payload[0] == 0x0d
+      raise ProtocolError.new("malformed DEVICE_INFO") unless payload.size == 82 && payload[0] == RESP_DEVICE_INFO
       actual = payload[1]
       raise ProtocolError.new("unsupported firmware protocol level #{actual}; expected #{expected_protocol}") unless actual == expected_protocol
       actual

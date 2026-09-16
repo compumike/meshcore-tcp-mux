@@ -13,6 +13,26 @@ describe MeshCoreTCPMux::Config do
     config.command_age.should eq(15.seconds)
     config.virtual_sync_timeout.should eq(15.seconds)
     config.radio_uncertainty_timeout.should eq(60.seconds)
+    config.private_key_export.should be_true
+    config.private_key_import.should be_true
+    config.factory_reset.should be_true
+    config.maintenance.should be_true
+  end
+
+  it "keeps the former combined maintenance property as a compatibility shim" do
+    config = MeshCoreTCPMux::Config.new
+    config.maintenance = false
+    config.private_key_import.should be_false
+    config.factory_reset.should be_false
+    config.maintenance.should be_false
+
+    config.maintenance = true
+    config.private_key_import.should be_true
+    config.factory_reset.should be_true
+    config.maintenance.should be_true
+
+    config.factory_reset = false
+    config.maintenance.should be_false
   end
 
   it "accepts any number of unique dedicated-client ports" do
