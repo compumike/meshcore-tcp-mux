@@ -203,7 +203,7 @@ describe MeshCoreTCPMux::Runtime do
     companion_server = TCPServer.new("127.0.0.1", 0)
     config = MeshCoreTCPMux::Config.new
     config.listen_host = "127.0.0.1"
-    config.listen_port = unused_tcp_port
+    config.listen_multi_client_port = unused_tcp_port
     config.startup_timeout = 1.second
     config.response_timeout = 1.second
     config.write_timeout = 1.second
@@ -258,7 +258,7 @@ describe MeshCoreTCPMux::Runtime do
     scope_written.receive
     sleep 20.milliseconds
 
-    client = TCPSocket.new("127.0.0.1", config.listen_port)
+    client = TCPSocket.new("127.0.0.1", config.listen_multi_client_port)
     client.read_timeout = 1.second
     # GET_DEVICE_TIME (5): local clock query.
     client.write(MeshCoreTCPMux::FrameCodec.encode(Bytes[5_u8], MeshCoreTCPMux::FrameCodec::CLIENT_TO_COMPANION_MARKER))

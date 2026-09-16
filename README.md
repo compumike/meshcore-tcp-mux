@@ -16,7 +16,8 @@ The core is **a serialized command broker which connects upstream, plus a separa
 
 See limitations below. The biggest limitation is that one client can't see the contents of the DM or channel messages sent by another client.
 
-`meshcore-tcp-mux` has **no database**: this is a feature. It's just TCP in, TCP out.
+`meshcore-tcp-mux` has **no database**. Dedicated-client history is retained only
+in volatile RAM and is lost when the mux process stops.
 
 ### ⚠️ WARNING: this project is mostly "vibe coded," but with lots of test coverage, and it has been tested extensively against both simulated and real-world companion nodes. ⚠️
 
@@ -58,10 +59,13 @@ services:
       - "5000"
       - "--listen-host"
       - "0.0.0.0"
-      - "--listen-port"
+      - "--listen-multi-client-port"
       - "5001"
+      - "--listen-dedicated-client-port"
+      - "5002"
     ports:
       - "127.0.0.1:5001:5001/tcp"
+      - "127.0.0.1:5002:5002/tcp"
     read_only: true
     cap_drop: ["ALL"]
     security_opt: ["no-new-privileges:true"]
@@ -91,6 +95,34 @@ meshcore-cli -t 127.0.0.1 -p 5001
 
 You should now be able to connect multiple clients to `127.0.0.1:5001` and have them all basically work simultaneously.
 
+Port 5001 is the **multi-client** listener: any number of simultaneous,
+connection-scoped clients may use it. The Compose example also enables one
+**dedicated client** on port 5002. That port is one stable logical client: a new
+connection replaces the old connection, while unread incoming messages remain
+queued in RAM for the replacement. The binary itself does not enable a
+dedicated port unless `--listen-dedicated-client-port PORT` is supplied; repeat
+that option to create more dedicated clients. Each internal port is its client
+identity, even when Docker maps it to a different host-side port.
+
+Existing command lines must replace the removed `--listen-port` option with
+`--listen-multi-client-port`. There is no implicit dedicated-client listener in
+the binary defaults; port 5002 is enabled explicitly by the Compose example.
+
+Dedicated queues default to 128 entries and can be changed with
+`--offline-queue-size N`. When full, they mirror companion firmware priority:
+the oldest channel message is sacrificed for a new arrival; if the queue has no
+channel message, the new arrival is discarded. A disconnected or abandoned
+dedicated client never stalls delivery to other clients. Large queues can make
+initial catch-up slow because native clients pull one item per sync request.
+
+Messages stay on the companion until at least one connected client explicitly
+requests inbox synchronization. Once a client starts that drain, each result is
+copied to all configured dedicated queues, including disconnected ones, and to
+qualifying live multi-client sessions. Retention is not an application receipt
+guarantee: an item is consumed from a dedicated queue when the mux accepts it
+for socket output, so a connection failure immediately afterward can still lose
+that item.
+
 -----
 
 ## Limitations
@@ -103,13 +135,16 @@ There are some limitations due to the nature of the MeshCore protocol, which was
   - This is the most visible and obvious limitation of the protocol. It can't be fixed without a firmware/protocol addition for an explicit outgoing-message event containing an ID, content, and delivery state.
 - Some operations may briefly block other clients for a few seconds because they require a two-way transaction between client and companion. These include listing contacts, querying or changing device settings, and waiting for a send acknowledgement. (The other clients are simply delayed/stalled for a few seconds, and will start working again once the transaction has completed.)
   - This is generally fine, as it's only a brief delay, and only on certain operations.
-- Messages are consumed from the companion and not retained for future clients, so a new client that connects won't see earlier messages that any other previously-connected clients have received. (When no clients are connected, messages remain queued on the companion.)
-  - The existing protocol does not provide a way to identify specific TCP clients, so there is no safe way to store and replay messages that a particular client has not yet seen.
-  - Blindly re-delivering old messages risks re-triggering bots and automations in a way which is not consistent with the underlying protocol.
+- Multi-client sessions are connection-scoped, so a newly connected client on
+  port 5001 does not receive messages distributed before it joined. A configured
+  dedicated port supplies stable identity and volatile reconnect history, but
+  does not survive mux restart or guarantee application receipt.
 - All clients share the companion's identity and configuration. A change made by one client affects every client, but the others may not notice it until they reconnect.
 - While a remote repeater login is pending, another client cannot start status, remote telemetry, binary, path-discovery, anonymous, or trace requests. (Ordinary local queries, incoming message handling, and outbound DMs and channel message sends can continue.)
 - Only one login or other remote request can be pending at a time. Concurrent attempts are rejected with BAD_STATE. Repeater login/logout state is shared by all clients.
 - This `meshcore-tcp-mux` must be the companion node's only direct client. Connecting to the node through BLE, USB, or another TCP connection will absolutely cause problems.
 - The exposed TCP port has no authentication or encryption and should not be exposed directly to the Internet.
+  Anyone who can reach a dedicated-client port can replace its current socket
+  and consume that client's retained queue.
 
 If you're writing automations or bots, these are generally not significantly concerning limitations.

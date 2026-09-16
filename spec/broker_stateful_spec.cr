@@ -25,14 +25,9 @@ private class StatefulHarness
     @broker.admit(1_i64, @now)
     @broker.admit(2_i64, @now)
     flush
-    # Admission probes the physical inbox. Drain it to an empty baseline so a
-    # test's first observed command belongs to that test, not initialization.
-    until @upstream.empty?
-      # SYNC_NEXT_MESSAGE (10): pop the next inbox item.
-      @upstream.shift.should eq(Bytes[10])
-      # NO_MORE_MESSAGES (0x0a): inbox empty.
-      response(Bytes[10])
-    end
+    # Admission emits a false-positive MSG_WAITING so notification-driven
+    # clients will request synchronization, but it never pops upstream itself.
+    @replies.clear
   end
 
   def client(id, payload) : Nil
@@ -172,6 +167,10 @@ describe "broker stateful operations" do
       h.broker.sessions[2_i64].target_version = 13_u8
       # MSG_WAITING (0x83): inbox availability hint; fetch the actual body separately.
       h.response(Bytes[0x83])
+      # Client 1's explicit request authorizes the physical drain and receives
+      # this item directly; client 2 receives its independent queued copy.
+      h.replies.clear
+      h.client(1, Bytes[10]) # SYNC_NEXT_MESSAGE.
       # SYNC_NEXT_MESSAGE (10): pop the next inbox item.
       h.upstream.shift.should eq(Bytes[10])
       # One physical pop creates a separate inbox entry for each client.
@@ -180,10 +179,7 @@ describe "broker stateful operations" do
       h.upstream.shift.should eq(Bytes[10])
       # NO_MORE_MESSAGES (0x0a): inbox empty.
       h.response(Bytes[10])
-      # Ignore availability notifications and inspect only explicit pop replies.
-      h.replies.clear
-      # SYNC_NEXT_MESSAGE (10): pop the next inbox item.
-      h.client(1, Bytes[10])
+      h.replies[2_i64].clear # Ignore the empty-to-nonempty availability hint.
       # SYNC_NEXT_MESSAGE (10): pop the next inbox item.
       h.client(2, Bytes[10])
       # Legacy conversion changes the text opcode and removes ONLY the three
@@ -253,22 +249,22 @@ describe "broker stateful operations" do
 
     global_pushes.each { |push| h.response(push) }
     orphaned_remote_results.each { |push| h.response(push) }
-    h.response(Bytes[0x83_u8]) # MSG_WAITING: hidden physical-inbox drain hint.
+    h.response(Bytes[0x83_u8]) # MSG_WAITING: downstream availability hint only.
     h.broker.active.should_not be_nil
     h.upstream.should be_empty
-    h.replies[1_i64].should eq(global_pushes)
-    h.replies[2_i64].should eq(global_pushes)
+    hinted_pushes = global_pushes + [Bytes[0x83_u8]]
+    h.replies[1_i64].should eq(hinted_pushes)
+    h.replies[2_i64].should eq(hinted_pushes)
 
     # CURRENT_TIME (0x09): only this five-byte ordinary response completes the
     # active GET_DEVICE_TIME, and it is visible only to its owner.
     current_time = Bytes[9_u8, 0x78_u8, 0x56_u8, 0x34_u8, 0x12_u8]
     h.response(current_time)
     h.replies[1_i64].last.should eq(current_time)
-    h.replies[2_i64].should eq(global_pushes)
-    # Once the unrelated clock transaction completes, the earlier hidden
-    # MSG_WAITING hint may finally schedule a physical inbox pop.
-    h.upstream.shift.should eq(Bytes[10_u8]) # SYNC_NEXT_MESSAGE.
-    h.response(Bytes[10_u8])                 # NO_MORE_MESSAGES.
+    h.replies[2_i64].should eq(hinted_pushes)
+    # The earlier MSG_WAITING remains only a downstream hint. It cannot schedule
+    # a destructive physical pop after the unrelated transaction completes.
+    h.upstream.should be_empty
     h.broker.active.should be_nil
   end
 

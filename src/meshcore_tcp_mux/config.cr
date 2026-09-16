@@ -10,7 +10,9 @@ class MeshCoreTCPMux
     # 176-byte payload maximum means entry/frame counts also impose finite byte
     # bounds, so separate byte budgets would be redundant.
     property listen_host = "127.0.0.1"
-    property listen_port = 5001
+    property listen_multi_client_port = 5001
+    property listen_dedicated_client_ports = Array(Int32).new
+    property offline_queue_size = 128
     property command_limit = 16
     property command_age = 15.seconds
     # A virtual sync waits for a qualifying physical inbox pop behind other
@@ -30,8 +32,12 @@ class MeshCoreTCPMux
 
     def validate! : Nil
       # Reject settings that cannot provide finite, positive resource deadlines.
-      raise ArgumentError.new("listen port must be between 1 and 65535") unless (1..65535).includes?(@listen_port)
-      unless {@command_limit, @inbox_entries, @output_frames}.all? { |n| n > 0 }
+      ports = [@listen_multi_client_port] + @listen_dedicated_client_ports
+      unless ports.all? { |listen_port| (1..65535).includes?(listen_port) }
+        raise ArgumentError.new("listen ports must be between 1 and 65535")
+      end
+      raise ArgumentError.new("listen ports must be unique") unless ports.uniq.size == ports.size
+      unless {@command_limit, @inbox_entries, @offline_queue_size, @output_frames}.all? { |n| n > 0 }
         raise ArgumentError.new("queue budgets must be positive")
       end
       unless {@command_age, @virtual_sync_timeout, @frame_timeout, @write_timeout, @response_timeout, @contacts_timeout,

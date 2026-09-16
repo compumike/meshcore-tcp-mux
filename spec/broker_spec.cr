@@ -25,6 +25,11 @@ private def settle_pumps(broker : MeshCoreTCPMux::Broker, now = Time::Span.zero)
   # otherwise an initialization pop would obscure the user-command ordering.
   loop do
     actions = broker.take_actions
+    # Treat downstream admission hints as accepted writes so later upstream or
+    # local-queue hints can be emitted independently.
+    sends(actions).reject { |send| send.session == 0_i64 }.each do |send|
+      broker.written(send.session, send.epoch, send.write_id, now)
+    end
     # SYNC_NEXT_MESSAGE (10): pop the next inbox item.
     pop = sends(actions, 0_i64).find { |send| send.payload == Bytes[10_u8] }
     break unless pop
@@ -162,18 +167,17 @@ describe MeshCoreTCPMux::Broker do
     broker.sessions[2_i64].target_version = 3_u8
     # MSG_WAITING (0x83): inbox availability hint; fetch the actual body separately.
     broker.upstream_frame(Bytes[0x83_u8], Time::Span.zero)
+    actions = broker.take_actions
+    one(sends(actions, 1_i64)).payload.should eq(Bytes[0x83_u8])
+    one(sends(actions, 2_i64)).payload.should eq(Bytes[0x83_u8])
+    # The hint does not move custody. Client 1's explicit sync authorizes the
+    # drain and remains pending until the physical result arrives.
+    broker.client_frame(1_i64, Bytes[10_u8], Time::Span.zero)
     pop = one(sends(broker.take_actions, 0_i64))
     item = v3_contact(0x44_u8)
     broker.upstream_frame(item, Time::Span.zero)
     actions = broker.take_actions
-    # MSG_WAITING (0x83): inbox availability hint; fetch the actual body separately.
-    one(sends(actions, 1_i64)).payload.should eq(Bytes[0x83_u8])
-    # MSG_WAITING (0x83): inbox availability hint; fetch the actual body separately.
-    one(sends(actions, 2_i64)).payload.should eq(Bytes[0x83_u8])
-
-    # SYNC_NEXT_MESSAGE (10): pop the next inbox item.
-    broker.client_frame(1_i64, Bytes[10_u8], Time::Span.zero)
-    legacy = one(sends(broker.take_actions, 1_i64)).payload
+    legacy = one(sends(actions, 1_i64)).payload
     # CONTACT_MESSAGE (0x07) legacy opcode; append the original body after stripping V3
     # metadata.
     legacy.should eq(Bytes[7_u8] + item[4..])
@@ -193,7 +197,7 @@ describe MeshCoreTCPMux::Broker do
     first_pop = one(sends(broker.take_actions, 0_i64))
     # MSG_WAITING (0x83): inbox availability hint; fetch the actual body separately.
     broker.upstream_frame(Bytes[0x83_u8], 1.millisecond)
-    sends(broker.take_actions).should be_empty
+    sends(broker.take_actions, 0_i64).should be_empty
     # NO_MORE_MESSAGES (0x0a): inbox empty.
     # This empty result belongs to the older pop. The intervening MSG_WAITING
     # hint still requires a new pop, even though this client can receive empty.
@@ -209,7 +213,9 @@ describe MeshCoreTCPMux::Broker do
     # Synthetic 32-byte companion public key; identifies the epoch, never a real radio key.
     broker = MeshCoreTCPMux::Broker.new(5_i64, Bytes.new(32))
     broker.admit(1_i64, Time::Span.zero)
-    # SYNC_NEXT_MESSAGE (10): admission starts a physical inbox pop.
+    broker.take_actions # Discard the admission MSG_WAITING hint.
+    # SYNC_NEXT_MESSAGE (10): only an explicit request starts a physical pop.
+    broker.client_frame(1_i64, Bytes[10_u8], Time::Span.zero)
     one(sends(broker.take_actions, 0_i64)).payload.should eq(Bytes[10_u8])
     # The destructive physical pop is already in flight when its last consumer
     # leaves. Preserve the returned item for the next cohort, not an unbounded log.
@@ -237,21 +243,16 @@ describe MeshCoreTCPMux::Broker do
     # MSG_WAITING (0x83): inbox availability hint; fetch the actual body separately.
     broker.upstream_frame(Bytes[0x83_u8], Time::Span.zero)
     broker.take_actions
-    broker.upstream_frame(v3_contact(1_u8), Time::Span.zero)
-    broker.take_actions
-    # Session 2 drains; session 1 remains full.
-    # SYNC_NEXT_MESSAGE (10): pop the next inbox item.
+    # Client 2 authorizes the first physical pop while both live multi-client
+    # sessions qualify for fan-out at completion.
     broker.client_frame(2_i64, Bytes[10_u8], Time::Span.zero)
-    broker.take_actions
-    second_pop = sends(broker.take_actions, 0_i64).first?
-    unless second_pop
-      # NO_MORE_MESSAGES (0x0a): inbox empty.
-      broker.upstream_frame(Bytes[10_u8], Time::Span.zero) if broker.active
-      broker.take_actions
-      # MSG_WAITING (0x83): inbox availability hint; fetch the actual body separately.
-      broker.upstream_frame(Bytes[0x83_u8], 1.millisecond)
-      second_pop = one(sends(broker.take_actions, 0_i64))
-    end
+    one(sends(broker.take_actions, 0_i64)).payload.should eq(Bytes[10_u8])
+    broker.upstream_frame(v3_contact(1_u8), Time::Span.zero)
+    first_result_actions = broker.take_actions
+    second_pop = one(sends(first_result_actions, 0_i64))
+    # Client 2 received the first item through its pending sync; session 1's
+    # copy remains full while the authorized cycle issues its next pop.
+    second_pop.payload.should eq(Bytes[10_u8])
     broker.upstream_frame(v3_contact(2_u8), 2.milliseconds)
     actions = broker.take_actions
     close_actions(actions).map(&.session).should contain(1_i64)
@@ -266,6 +267,8 @@ describe MeshCoreTCPMux::Broker do
     # MSG_WAITING (0x83): inbox availability hint; fetch the actual body separately.
     broker.upstream_frame(Bytes[0x83_u8], Time::Span.zero)
     broker.take_actions
+    broker.client_frame(1_i64, Bytes[10_u8], Time::Span.zero)
+    one(sends(broker.take_actions, 0_i64)).payload.should eq(Bytes[10_u8])
     # GET_DEVICE_TIME (5): local clock query.
     broker.client_frame(1_i64, Bytes[5_u8], Time::Span.zero)
     sends(broker.take_actions).should be_empty

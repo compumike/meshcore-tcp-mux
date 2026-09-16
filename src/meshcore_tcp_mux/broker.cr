@@ -1,4 +1,5 @@
 require "./config"
+require "./dedicated_client_slot"
 require "./session"
 require "./protocol"
 require "./leases"
@@ -28,6 +29,7 @@ class MeshCoreTCPMux
       property contacts_started = false
       getter pop_sequence : Int64
       getter notification_generation : Int64
+      property had_multi_client = false
       property step = Step::Command
       property scoped = false
       property maintenance = false
@@ -48,12 +50,14 @@ class MeshCoreTCPMux
     getter actions = Array(Action).new
     getter failed = false
     getter orphan : Bytes? = nil
+    getter dedicated_slots : Hash(Int32, DedicatedClientSlot)
     @order = Deque(Int64).new([0_i64])
     @next_write = 0_i64
     @upstream_writes = Hash(Int64, Time::Span).new
     @pop_sequence = 0_i64
     @notification_generation = 0_i64
     @drain_requested = false
+    @drain_authorized = false
     @last_poll : Time::Span
     @now = Time::Span.zero
     @dm_ring = DmRing.new
@@ -62,9 +66,12 @@ class MeshCoreTCPMux
     @counters = Hash(Symbol, UInt64).new(0_u64)
     @last_unknown_log : Time::Span? = nil
     @last_orphan_log : Time::Span? = nil
+    @last_dedicated_overflow_log = Hash(Int32, Time::Span).new
+    @suppressed_dedicated_overflow = Hash(Int32, UInt64).new(0_u64)
 
     def initialize(@epoch : Int64, @self_key : Bytes, @config = Config.new, now = Time::Span.zero,
-                   @orphan : Bytes? = nil) : Nil
+                   @orphan : Bytes? = nil,
+                   @dedicated_slots = Hash(Int32, DedicatedClientSlot).new) : Nil
       @last_poll = now
       @signing = SigningLease.new(@config.signing_timeout)
     end
@@ -76,7 +83,7 @@ class MeshCoreTCPMux
       result
     end
 
-    def admit(id : Int64, now : Time::Span) : Nil
+    def admit(id : Int64, now : Time::Span, dedicated_slot_id : Int32? = nil) : Nil
       # Create an independent client view and include it in round-robin scheduling. ID 0 is reserved
       # for the broker's physical inbox consumer; downstream clients have positive IDs.
       @now = now
@@ -84,15 +91,30 @@ class MeshCoreTCPMux
         @actions << CloseSession.new(id, "upstream unavailable")
         return
       end
-      @sessions[id] = Session.new(id)
+      if dedicated_slot_id
+        slot = @dedicated_slots[dedicated_slot_id]? || raise ArgumentError.new("unknown dedicated client slot")
+        if old_session_id = slot.attached_session_id
+          remove(old_session_id, "replaced by new dedicated client connection")
+        end
+        slot.attached_session_id = id
+      end
+      @sessions[id] = Session.new(id, dedicated_slot_id)
       @counters[:connections] += 1
       @order << id
-      @actions << Diagnostic.new("event=session.admitted epoch=#{@epoch} session=#{id} sessions=#{@sessions.size}")
-      if item = @orphan
-        @orphan = nil
-        fan_out(item)
+      @actions << Diagnostic.new("event=session.admitted epoch=#{@epoch} session=#{id} " \
+                                 "dedicated_slot_id=#{dedicated_slot_id || "none"} sessions=#{@sessions.size}")
+      if dedicated_slot_id
+        slot = @dedicated_slots[dedicated_slot_id]
+        @actions << Diagnostic.new("event=dedicated_client.attached epoch=#{@epoch} session=#{id} " \
+                                   "dedicated_slot_id=#{dedicated_slot_id} queue_depth=#{slot.offline_queue.size}")
       end
-      request_drain
+      if dedicated_slot_id.nil? && (item = @orphan)
+        @orphan = nil
+        enqueue_multi_client(@sessions[id], item)
+      end
+      # Admission never destructively reads the companion. A false-positive
+      # MSG_WAITING is compatible with native clients and prompts an explicit sync.
+      emit_availability_hint(@sessions[id])
       schedule(now)
     end
 
@@ -129,6 +151,7 @@ class MeshCoreTCPMux
         @upstream_writes.delete(write_id)
       elsif session = @sessions[id]?
         session.writes.delete(write_id)
+        session.availability_hint_write_id = nil if session.availability_hint_write_id == write_id
         if (transaction = @active) && transaction.maintenance && transaction.step.maintenance_result? &&
            transaction.owner == id && transaction.maintenance_write_id == write_id
           finish_transaction(transaction)
@@ -164,7 +187,8 @@ class MeshCoreTCPMux
     end
 
     def tick(now : Time::Span) : Nil
-      # Expire client waits and radio reservations, enforce deadlines, and periodically check the physical inbox.
+      # Expire client waits and radio reservations. Polling only reminds attached
+      # clients to sync; it never authorizes a destructive physical inbox pop.
       @now = now
       return if @failed
       return unless check_active_deadline(now)
@@ -200,7 +224,7 @@ class MeshCoreTCPMux
       end
       if !@sessions.empty? && now - @last_poll >= @config.poll_interval
         @last_poll = now
-        request_drain
+        notify_all_sessions
       end
       schedule(now)
     end
@@ -217,12 +241,33 @@ class MeshCoreTCPMux
       @actions << EndEpoch.new(@epoch, reason)
     end
 
-    private def request_drain : Nil
-      # Record new evidence that the physical inbox needs checking. Generations prevent an older empty
-      # reply from consuming a newer MSG_WAITING notification or client sync request.
+    private def authorize_drain : Nil
+      # Only a downstream sync against an empty local queue authorizes physical
+      # inbox custody. Generations fence older empty observations from newer work.
+      @drain_authorized = true
       @drain_requested = true
       @notification_generation += 1
       @actions << Diagnostic.new("event=inbox.drain_requested epoch=#{@epoch} generation=#{@notification_generation}", :debug)
+    end
+
+    private def record_availability_hint : Nil
+      # Remember upstream evidence and notify clients without starting a drain.
+      # During an already-authorized cycle the hint requires another empty check.
+      @notification_generation += 1
+      @drain_requested = true if @drain_authorized
+      notify_all_sessions
+    end
+
+    private def notify_all_sessions : Nil
+      # MSG_WAITING is an availability hint, not a count or acknowledgement.
+      @sessions.values.each { |session| emit_availability_hint(session) }
+    end
+
+    private def emit_availability_hint(session : Session) : Nil
+      # Coalesce overlapping admission, upstream, and local-queue hints while
+      # one MSG_WAITING write is outstanding. Completion permits later reminders.
+      return if session.availability_hint_write_id
+      session.availability_hint_write_id = emit(session.id, Bytes[0x83_u8])
     end
 
     private def check_active_deadline(now : Time::Span) : Bool
@@ -240,7 +285,15 @@ class MeshCoreTCPMux
     private def remove(id : Int64, reason : String, category = :normal) : Nil
       return unless session = @sessions.delete(id)
       @counters[:disconnections] += 1
-      @counters[:discarded_inbox_items] += session.inbox.size.to_u64
+      if dedicated_slot_id = session.dedicated_slot_id
+        if slot = @dedicated_slots[dedicated_slot_id]?
+          slot.attached_session_id = nil if slot.attached_session_id == id
+          @actions << Diagnostic.new("event=dedicated_client.detached epoch=#{@epoch} session=#{id} " \
+                                     "dedicated_slot_id=#{dedicated_slot_id} queue_depth=#{slot.offline_queue.size}")
+        end
+      else
+        @counters[:discarded_inbox_items] += session.inbox.size.to_u64
+      end
       @remote.owner_gone(id)
       # Delay abandonment of signing state until an in-flight reply has been
       # classified, otherwise its accepted byte count would have no owner.
@@ -248,6 +301,10 @@ class MeshCoreTCPMux
       @order.delete(id)
       @actions << Diagnostic.new("epoch=#{@epoch} session=#{id} close reason=#{reason.inspect} inbox_items=#{session.inbox.size} queued_commands=#{session.commands.size}", category)
       @actions << CloseSession.new(id, reason)
+      if @sessions.empty?
+        @drain_authorized = false
+        @drain_requested = false
+      end
       if (transaction = @active) && transaction.maintenance && transaction.step.maintenance_result? && transaction.owner == id
         finish_transaction(transaction)
       end
@@ -295,9 +352,9 @@ class MeshCoreTCPMux
             reject(session.id, 4_u8, "command queue age") # BAD_STATE.
           elsif command.payload[0] == 10                  # 10 = SYNC_NEXT_MESSAGE.
             session.commands.shift
-            if session.inbox.empty?
+            if inbox_for(session).empty?
               session.sync = PendingSync.new(@pop_sequence + 1, now + @config.virtual_sync_timeout)
-              request_drain
+              authorize_drain
               break
             else
               deliver_item(session)
@@ -348,6 +405,7 @@ class MeshCoreTCPMux
       # in hidden SET_FLOOD_SCOPE_KEY (0x36) setup and default-scope restoration (mode 0, no key).
       descriptor = Protocol.descriptor(command).not_nil!
       transaction = Transaction.new(owner, command, descriptor, now, pop_sequence, generation)
+      transaction.had_multi_client = @sessions.values.any? { |session| !session.dedicated? } if owner == 0
       transaction.job_id = @next_write + 1
       @active = transaction
       transaction.maintenance = descriptor.flags.includes?(Protocol::CommandFlags::Maintenance)
@@ -544,13 +602,14 @@ class MeshCoreTCPMux
     end
 
     private def push(payload : Bytes, now : Time::Span) : Nil
-      # MSG_WAITING requests a physical drain; SEND_CONFIRMED settles the DM ring and is broadcast.
+      # MSG_WAITING prompts downstream sync without taking custody;
+      # SEND_CONFIRMED settles the DM ring and is broadcast.
       # Remote result pushes go only to their lease owner. Self telemetry is exceptional: its push-shaped
       # reply completes the active four-byte SEND_TELEMETRY_REQ (39), matched by the six-byte self-key prefix.
       case payload[0]
       when 0x83 # MSG_WAITING.
-        @actions << Diagnostic.new("event=push.received epoch=#{@epoch} route=inbox_drain #{Protocol.describe_response(payload)}")
-        request_drain
+        @actions << Diagnostic.new("event=push.received epoch=#{@epoch} route=inbox_hint #{Protocol.describe_response(payload)}")
+        record_availability_hint
       when 0x82 # SEND_CONFIRMED.
         matched = @dm_ring.confirm(payload)
         @actions << Diagnostic.new("event=push.received epoch=#{@epoch} route=broadcast matched=#{matched} " \
@@ -611,43 +670,113 @@ class MeshCoreTCPMux
           end
         end
         # A newer notification or sync must survive an older empty observation.
-        @drain_requested = @notification_generation > transaction.notification_generation || @sessions.values.any?(&.sync)
+        newer_work = @notification_generation > transaction.notification_generation || @sessions.values.any?(&.sync)
+        if newer_work && !@sessions.empty?
+          @drain_authorized = true
+          @drain_requested = true
+        else
+          @drain_authorized = false
+          @drain_requested = false
+        end
       else
         @counters[:inbox_pops] += 1
-        if @sessions.empty?
+        fan_out_dedicated(payload)
+        multi_clients = @sessions.values.select { |session| !session.dedicated? }
+        if multi_clients.empty? && transaction.had_multi_client
           @orphan = payload
         else
-          fan_out(payload)
-          @drain_requested = true
+          multi_clients.each { |session| enqueue_multi_client(session, payload) }
+        end
+        @drain_requested = @drain_authorized && !@sessions.empty?
+      end
+    end
+
+    private def fan_out_dedicated(payload : Bytes) : Nil
+      # Every configured dedicated client receives a copy, including detached
+      # clients. Firmware-style overflow in one slot never blocks another.
+      @dedicated_slots.each_value do |slot|
+        was_empty = slot.offline_queue.empty?
+        previous_high_water = slot.high_water
+        result = slot.enqueue_offline(payload, @config.offline_queue_size)
+        case result
+        when DedicatedClientSlot::EnqueueResult::ChannelEvicted
+          warn_dedicated_overflow(slot, "channel_evicted")
+        when DedicatedClientSlot::EnqueueResult::NewMessageDiscarded
+          warn_dedicated_overflow(slot, "new_message_discarded")
+          next
+        when DedicatedClientSlot::EnqueueResult::Added
+          # Normal bounded enqueue needs no warning.
+        end
+        if slot.high_water > previous_high_water
+          @actions << Diagnostic.new("event=dedicated_queue.high_water epoch=#{@epoch} " \
+                                     "dedicated_slot_id=#{slot.dedicated_slot_id} depth=#{slot.high_water}", :debug)
+        end
+
+        if session_id = slot.attached_session_id
+          if session = @sessions[session_id]?
+            if session.sync
+              session.sync = nil
+              deliver_item(session)
+            elsif was_empty
+              emit_availability_hint(session) # MSG_WAITING: the dedicated queue became nonempty.
+            end
+          end
         end
       end
     end
 
-    private def fan_out(payload : Bytes) : Nil
-      # Share immutable inbox payloads across clients but maintain separate queue positions and limits.
-      # FrameCodec's payload maximum makes the entry count a hard byte bound too.
-      # An empty-to-nonempty transition sends MSG_WAITING (0x83), unless a waiting sync can receive immediately.
-      @sessions.values.each do |session|
-        if session.inbox.size >= @config.inbox_entries
-          remove(session.id, "inbox overflow")
-          next
-        end
-        was_empty = session.inbox.empty?
-        session.inbox << payload
-        if session.sync
-          session.sync = nil
-          deliver_item(session)
-        elsif was_empty
-          emit(session.id, Bytes[0x83])
-        end
+    private def warn_dedicated_overflow(slot : DedicatedClientSlot, event : String) : Nil
+      # Overflow may be sustained for an abandoned slot. Rate-limit metadata-only
+      # warnings per slot while counters continue to record every eviction/drop.
+      dedicated_slot_id = slot.dedicated_slot_id
+      if (last = @last_dedicated_overflow_log[dedicated_slot_id]?) && @now - last < 1.second
+        @suppressed_dedicated_overflow[dedicated_slot_id] += 1
+        return
+      end
+      suppressed = @suppressed_dedicated_overflow[dedicated_slot_id]
+      @suppressed_dedicated_overflow[dedicated_slot_id] = 0_u64
+      @last_dedicated_overflow_log[dedicated_slot_id] = @now
+      @actions << Diagnostic.new("event=dedicated_queue.#{event} epoch=#{@epoch} " \
+                                 "dedicated_slot_id=#{dedicated_slot_id} depth=#{slot.offline_queue.size} " \
+                                 "suppressed_since_last=#{suppressed}", :warn)
+    end
+
+    private def enqueue_multi_client(session : Session, payload : Bytes) : Nil
+      # Multi-client inboxes remain connection-scoped and isolate slow clients
+      # by disconnecting them at their existing bound.
+      if session.inbox.size >= @config.inbox_entries
+        remove(session.id, "inbox overflow")
+        return
+      end
+      was_empty = session.inbox.empty?
+      session.inbox << payload
+      if session.sync
+        session.sync = nil
+        deliver_item(session)
+      elsif was_empty
+        emit_availability_hint(session) # MSG_WAITING: the multi-client inbox became nonempty.
+      end
+    end
+
+    private def inbox_for(session : Session) : Deque(Bytes)
+      # Dedicated sessions consume their persistent slot queue; multi-client
+      # sessions consume the existing connection-scoped queue.
+      if dedicated_slot_id = session.dedicated_slot_id
+        @dedicated_slots[dedicated_slot_id].offline_queue
+      else
+        session.inbox
       end
     end
 
     private def deliver_item(session : Session) : Nil
       # Remove a client's oldest inbox item only after successfully enqueueing its version-adjusted reply.
-      item = session.inbox.first
+      inbox = inbox_for(session)
+      item = inbox.first
       if emit(session.id, Protocol.downgrade_inbox(item, session.target_version))
-        session.inbox.shift
+        inbox.shift
+        if dedicated_slot_id = session.dedicated_slot_id
+          @dedicated_slots[dedicated_slot_id].record_delivery
+        end
       end
     end
   end

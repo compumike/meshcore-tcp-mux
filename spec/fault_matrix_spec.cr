@@ -14,12 +14,10 @@ private def matrix_ready(config = MeshCoreTCPMux::Config.new) : MeshCoreTCPMux::
   broker = MeshCoreTCPMux::Broker.new(201_i64, Bytes.new(32, 0x77), config)
   broker.admit(1_i64, Time::Span.zero)
   broker.admit(2_i64, Time::Span.zero)
-  loop do
-    pop = matrix_sends(broker.take_actions, 0_i64).first?
-    break unless pop
-    broker.written(0_i64, pop.epoch, pop.write_id, Time::Span.zero)
-    # NO_MORE_MESSAGES (0x0a): inbox empty.
-    broker.upstream_frame(Bytes[10_u8], Time::Span.zero)
+  matrix_sends(broker.take_actions).each do |hint|
+    # MSG_WAITING admission hints are downstream-only and complete immediately
+    # in this broker model harness.
+    broker.written(hint.session, hint.epoch, hint.write_id, Time::Span.zero)
   end
   broker.take_actions
   broker

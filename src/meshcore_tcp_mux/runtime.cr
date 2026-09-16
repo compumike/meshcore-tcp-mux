@@ -2,6 +2,7 @@ require "socket"
 require "log"
 require "./broker"
 require "./config"
+require "./dedicated_client_slot"
 require "./frame_codec"
 require "./startup"
 require "./transport"
@@ -14,24 +15,39 @@ class MeshCoreTCPMux
     alias ConnectResult = TCPSocket | Exception
     LOGGER = Log.for("meshcore_tcp_mux.runtime")
 
+    enum ListenerKind
+      # Multi-client accepts anonymous concurrent sessions; dedicated-client
+      # accepts replace the prior attachment for one stable port identity.
+      MultiClient
+      DedicatedClient
+    end
+
+    record ListenerBinding, server : TCPServer, kind : ListenerKind, dedicated_slot_id : Int32?
+    record AcceptedSocket, socket : TCPSocket, kind : ListenerKind, dedicated_slot_id : Int32?
+
     @stopping = Channel(Nil).new
     @finished = Channel(Nil).new(1)
-    @accepted = Channel(TCPSocket).new
+    @accepted = Channel(AcceptedSocket).new
     @accept_done = Channel(Nil).new(1)
     @accept_error : Exception? = nil
     @running = false
     @stop_requested = false
-    @server : TCPServer? = nil
+    @listeners = Array(ListenerBinding).new
     @upstream : Transport::Endpoint? = nil
     @clients = Hash(Int64, Transport::Endpoint).new
     @next_session = 0_i64
     @next_epoch = 0_i64
     @orphan : Bytes? = nil
     @orphan_key : Bytes? = nil
+    @dedicated_slots = Hash(Int32, DedicatedClientSlot).new
+    @dedicated_slots_key : Bytes? = nil
     @last_malformed_log : Time::Span? = nil
     @suppressed_malformed = 0_u64
 
     def initialize(@host : String, @port : Int32, @config : Config) : Nil
+      @config.listen_dedicated_client_ports.each do |listen_port|
+        @dedicated_slots[listen_port] = DedicatedClientSlot.new(listen_port, listen_port)
+      end
     end
 
     def run : Nil
@@ -40,10 +56,15 @@ class MeshCoreTCPMux
       # BinaryEntrypoint exits nonzero and a supervisor can restart the daemon.
       raise "runtime already running" if @running
       @running = true
-      server = create_listener
-      @server = server
-      LOGGER.info { "event=listener.started address=#{socket_address(server.local_address)} upstream=#{@host}:#{@port}" }
-      start_acceptor(server)
+      @listeners = bind_listeners
+      @listeners.each do |listener|
+        LOGGER.info do
+          "event=listener.started kind=#{listener.kind.to_s.underscore} " \
+          "dedicated_slot_id=#{listener.dedicated_slot_id || "none"} " \
+          "address=#{socket_address(listener.server.local_address)} upstream=#{@host}:#{@port}"
+        end
+        start_acceptor(listener)
+      end
       backoff = 500.milliseconds
 
       until @stop_requested
@@ -74,7 +95,8 @@ class MeshCoreTCPMux
           break if @stop_requested
           self_key = startup.self_key.not_nil!
           orphan = orphan_for(self_key)
-          broker = Broker.new(@next_epoch, self_key, @config, Clock.now, orphan)
+          prepare_dedicated_slots(self_key)
+          broker = Broker.new(@next_epoch, self_key, @config, Clock.now, orphan, @dedicated_slots)
           ready_at = Clock.now
           LOGGER.info { "event=upstream.ready epoch=#{@next_epoch} remote=#{socket_address(socket.remote_address)} #{startup.identification}" }
           run_epoch(broker, endpoint, upstream_events)
@@ -101,11 +123,13 @@ class MeshCoreTCPMux
     ensure
       @stop_requested = true
       @stopping.close unless @stopping.closed?
-      @server.try &.close
+      @listeners.each { |listener| listener.server.close rescue nil }
       @upstream.try &.stop
       close_all_clients
-      @accept_done.receive if @server
-      @server = nil
+      @listeners.size.times { @accept_done.receive }
+      @listeners.clear
+      unread = @dedicated_slots.values.sum(&.offline_queue.size)
+      LOGGER.info { "event=dedicated_queues.volatile_discard process_stopping=true entries=#{unread}" } unless unread.zero?
       @running = false
       LOGGER.info { "event=runtime.stopped" }
       @finished.send(nil)
@@ -119,10 +143,34 @@ class MeshCoreTCPMux
       @finished.receive if @running
     end
 
-    protected def create_listener : TCPServer
+    protected def create_listener(port : Int32) : TCPServer
       # Separate listener creation from its ownership loop so socket faults can
       # be injected in specs without exhausting machine-wide descriptors.
-      TCPServer.new(@config.listen_host, @config.listen_port)
+      TCPServer.new(@config.listen_host, port)
+    end
+
+    private def bind_listeners : Array(ListenerBinding)
+      # Bind the complete configured set before starting any acceptor. Partial
+      # identity availability is unsafe because clients could reach the wrong mode.
+      listeners = Array(ListenerBinding).new
+      begin
+        listeners << ListenerBinding.new(
+          create_listener(@config.listen_multi_client_port),
+          ListenerKind::MultiClient,
+          nil
+        )
+        @config.listen_dedicated_client_ports.each do |listen_port|
+          listeners << ListenerBinding.new(
+            create_listener(listen_port),
+            ListenerKind::DedicatedClient,
+            listen_port
+          )
+        end
+      rescue ex
+        listeners.each { |listener| listener.server.close rescue nil }
+        raise ex
+      end
+      listeners
     end
 
     private def request_stop : Nil
@@ -132,20 +180,21 @@ class MeshCoreTCPMux
       LOGGER.info { "event=runtime.stop_requested clients=#{@clients.size} epoch=#{@next_epoch}" }
       @stop_requested = true
       @stopping.close
-      @server.try &.close
+      @listeners.each { |listener| listener.server.close rescue nil }
       @upstream.try &.socket.close
       @clients.each_value { |endpoint| endpoint.socket.close rescue nil }
     end
 
-    private def start_acceptor(server : TCPServer) : Nil
+    private def start_acceptor(listener : ListenerBinding) : Nil
       # Transfer each accepted socket through a cancellable handoff. A failed
       # accept must stop the process, not leave a live daemon with a dead listener.
       spawn do
         begin
           loop do
-            socket = server.accept
+            socket = listener.server.accept
+            accepted_socket = AcceptedSocket.new(socket, listener.kind, listener.dedicated_slot_id)
             accepted = select
-            when @accepted.send(socket)
+            when @accepted.send(accepted_socket)
               true
             when @stopping.receive?
               false
@@ -200,7 +249,8 @@ class MeshCoreTCPMux
             "event=upstream.connected local=#{socket_address(connected.local_address)} remote=#{socket_address(connected.remote_address)}"
           end
           return connected
-        when socket = @accepted.receive
+        when accepted = @accepted.receive
+          socket = accepted.socket
           LOGGER.info { "event=client.refused remote=#{socket_address(socket.remote_address)} reason=upstream_connecting" }
           socket.close
         when @stopping.receive?
@@ -241,7 +291,8 @@ class MeshCoreTCPMux
           when Transport::Written
             # Receipt is useful only for failure detection during startup.
           end
-        when socket = @accepted.receive
+        when accepted = @accepted.receive
+          socket = accepted.socket
           LOGGER.info { "event=client.refused remote=#{socket_address(socket.remote_address)} reason=upstream_starting epoch=#{epoch}" }
           socket.close
         when timeout(100.milliseconds)
@@ -261,8 +312,8 @@ class MeshCoreTCPMux
       ended = apply_actions(broker, upstream)
       until ended || @stop_requested
         select
-        when socket = @accepted.receive
-          admit(socket, broker, downstream_events)
+        when accepted = @accepted.receive
+          admit(accepted, broker, downstream_events)
         when event = upstream_events.receive
           handle_upstream(event, broker)
         when event = downstream_events.receive
@@ -286,11 +337,13 @@ class MeshCoreTCPMux
       end
     end
 
-    private def admit(socket : TCPSocket, broker : Broker, events : Channel(Transport::Event)) : Nil
+    private def admit(accepted : AcceptedSocket, broker : Broker, events : Channel(Transport::Event)) : Nil
+      socket = accepted.socket
       @next_session += 1
       id = @next_session
       LOGGER.info do
         "event=client.connected epoch=#{broker.epoch} session=#{id} " \
+        "kind=#{accepted.kind.to_s.underscore} dedicated_slot_id=#{accepted.dedicated_slot_id || "none"} " \
         "local=#{socket_address(socket.local_address)} remote=#{socket_address(socket.remote_address)}"
       end
       endpoint = Transport::Endpoint.new(
@@ -304,7 +357,7 @@ class MeshCoreTCPMux
       )
       @clients[id] = endpoint
       endpoint.start
-      broker.admit(id, Clock.now)
+      broker.admit(id, Clock.now, accepted.dedicated_slot_id)
     end
 
     private def handle_upstream(event : Transport::Event, broker : Broker) : Nil
@@ -417,6 +470,23 @@ class MeshCoreTCPMux
       end
     end
 
+    private def prepare_dedicated_slots(self_key : Bytes) : Nil
+      # Dedicated history crosses upstream epochs only for the same companion
+      # public key. A changed identity must never inherit another node's inbox.
+      if previous_key = @dedicated_slots_key
+        if previous_key == self_key
+          retained = @dedicated_slots.values.sum(&.offline_queue.size)
+          LOGGER.info { "event=dedicated_queues.preserved entries=#{retained}" } unless retained.zero?
+        else
+          discarded = @dedicated_slots.values.sum(&.clear)
+          LOGGER.warn do
+            "event=dedicated_queues.cleared reason=upstream_identity_changed entries=#{discarded}"
+          end
+        end
+      end
+      @dedicated_slots_key = self_key.dup
+    end
+
     private def orphan_for(self_key : Bytes) : Bytes?
       orphan = @orphan
       return nil unless orphan
@@ -441,7 +511,8 @@ class MeshCoreTCPMux
         remaining = deadline - Clock.now
         return if remaining <= Time::Span.zero
         select
-        when socket = @accepted.receive
+        when accepted = @accepted.receive
+          socket = accepted.socket
           LOGGER.info { "event=client.refused remote=#{socket_address(socket.remote_address)} reason=upstream_backoff" }
           socket.close
         when timeout(remaining)

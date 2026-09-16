@@ -59,7 +59,7 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
             str(relay.port),
             "--listen-host",
             "127.0.0.1",
-            "--listen-port",
+            "--listen-multi-client-port",
             str(listen_port),
             "--poll-interval",
             "60",

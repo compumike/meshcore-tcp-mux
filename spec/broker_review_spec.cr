@@ -13,12 +13,10 @@ private def review_ready_broker(config = MeshCoreTCPMux::Config.new) : MeshCoreT
   # Synthetic 32-byte companion public key; identifies the epoch, never a real radio key.
   broker = MeshCoreTCPMux::Broker.new(77_i64, Bytes.new(32), config)
   broker.admit(1_i64, Time::Span.zero)
-  pop = review_sends(broker.take_actions, 0_i64).first
-  # SYNC_NEXT_MESSAGE (10): pop the next inbox item.
-  pop.payload.should eq(Bytes[10_u8])
-  broker.written(0_i64, pop.epoch, pop.write_id, Time::Span.zero)
-  # NO_MORE_MESSAGES (0x0a): inbox empty.
-  broker.upstream_frame(Bytes[10_u8], Time::Span.zero)
+  # Admission emits only a downstream MSG_WAITING hint; acknowledge it so the
+  # regression under test starts with no outstanding output budget.
+  hint = review_sends(broker.take_actions, 1_i64).first
+  broker.written(1_i64, hint.epoch, hint.write_id, Time::Span.zero)
   broker.take_actions
   broker
 end

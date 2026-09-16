@@ -299,6 +299,7 @@ describe "remaining design acceptance invariants" do
 
     # MSG_WAITING (0x83): inbox availability hint; fetch the actual body separately.
     h.response(Bytes[0x83_u8])
+    h.client(1_i64, Bytes[10_u8]) # SYNC_NEXT_MESSAGE authorizes the drain.
     # SYNC_NEXT_MESSAGE (10): pop the next inbox item.
     h.upstream.shift.payload.should eq(Bytes[10_u8])
     h.broker.admit(3_i64, h.now)
@@ -310,13 +311,20 @@ describe "remaining design acceptance invariants" do
     h.upstream.shift.payload.should eq(Bytes[10_u8])
     h.broker.admit(4_i64, h.now)
     h.flush
+    # Admission's false-positive MSG_WAITING does not make the new client part
+    # of the already-issued physical pop.
+    h.downstream[4_i64].clear
     h.response(item)
     # SYNC_NEXT_MESSAGE (10): pop the next inbox item.
     h.upstream.shift.payload.should eq(Bytes[10_u8])
     # NO_MORE_MESSAGES (0x0a): inbox empty.
     h.response(Bytes[10_u8])
 
-    {1_i64, 2_i64, 3_i64}.each do |id|
+    # Client 1's first item satisfied the request which authorized the cycle,
+    # so it has one queued copy left; the other qualifying sessions have two.
+    h.client(1_i64, Bytes[10_u8])
+    h.downstream[1_i64].select { |p| p[0] == 7 }.should eq([item, item])
+    {2_i64, 3_i64}.each do |id|
       # SYNC_NEXT_MESSAGE (10): pop the next inbox item.
       2.times { h.client(id, Bytes[10_u8]) }
       h.downstream[id].select { |p| p[0] == 7 }.should eq([item, item]) # 7 = CONTACT_MESSAGE.
@@ -333,10 +341,11 @@ describe "remaining design acceptance invariants" do
     broker = MeshCoreTCPMux::Broker.new(92_i64, Bytes.new(32), config)
     broker.admit(1_i64, Time::Span.zero)
     broker.admit(2_i64, Time::Span.zero)
-    pop = broker.take_actions.compact_map(&.as?(MeshCoreTCPMux::SendFrame)).find { |a| a.session == 0 }.not_nil!
-    broker.written(0_i64, pop.epoch, pop.write_id, Time::Span.zero)
-    # NO_MORE_MESSAGES (0x0a): inbox empty.
-    broker.upstream_frame(Bytes[10_u8], Time::Span.zero)
+    # Complete both admission hints so the following raw push, not setup, is
+    # what occupies each client's one-frame output budget.
+    broker.take_actions.compact_map(&.as?(MeshCoreTCPMux::SendFrame)).each do |hint|
+      broker.written(hint.session, hint.epoch, hint.write_id, Time::Span.zero)
+    end
     broker.take_actions
 
     # LOG_RX_DATA (0x88): SNR and RSSI metadata followed by opaque packet
@@ -408,6 +417,7 @@ describe "remaining design acceptance invariants" do
     # come from a newer probe, not an old result it was never waiting on.
     h.broker.admit(4_i64, h.now)
     h.flush
+    h.downstream[4_i64].clear # Discard this admission's false-positive hint.
     # SYNC_NEXT_MESSAGE (10): pop the next inbox item.
     h.client(4_i64, Bytes[10_u8])
     # NO_MORE_MESSAGES (0x0a): inbox empty.
@@ -427,8 +437,9 @@ describe "remaining design acceptance invariants" do
     h.now = 5.seconds
     h.broker.tick(h.now)
     h.flush
-    # SYNC_NEXT_MESSAGE (10): pop the next inbox item.
-    h.upstream.shift.payload.should eq(Bytes[10_u8])
+    # Fallback polling is a client reminder, not permission to pop upstream.
+    h.upstream.should be_empty
+    h.downstream.values.each { |payloads| payloads.last.should eq(Bytes[0x83_u8]) }
   end
 
   it "expires a virtual sync locally while a progressing contacts stream continues" do
@@ -445,9 +456,10 @@ describe "remaining design acceptance invariants" do
     h.now = 5.seconds
     h.broker.tick(h.now)
     h.flush
-    # Five seconds no longer expires this sync. Keep the contacts stream
-    # progressing so only the virtual wait reaches its deadline.
-    h.downstream[2_i64].should be_empty
+    # Five seconds no longer expires this sync. Polling may remind the client
+    # with MSG_WAITING but cannot complete the pending request or pop upstream.
+    h.downstream[2_i64].should eq([Bytes[0x83_u8]])
+    h.downstream[2_i64].clear
     [8, 12].each do |second|
       h.now = second.seconds
       # CONTACT (3): full 148-byte native record with synthetic zero fields.
@@ -457,7 +469,7 @@ describe "remaining design acceptance invariants" do
     h.broker.tick(h.now)
     h.flush
     # ERR (0x01), BAD_STATE: only the fifteen-second virtual sync has expired.
-    h.downstream[2_i64].last.should eq(Bytes[1_u8, 4_u8])
+    h.downstream[2_i64].should contain(Bytes[1_u8, 4_u8])
     h.broker.failed.should be_false
     h.broker.active.should_not be_nil
   end
@@ -646,6 +658,7 @@ describe "remaining design acceptance invariants" do
     h.downstream[1_i64].last.should eq(Bytes[10_u8])
     # MSG_WAITING (0x83): inbox availability hint; fetch the actual body separately.
     h.response(Bytes[0x83_u8])
+    h.client(1_i64, Bytes[10_u8]) # SYNC_NEXT_MESSAGE authorizes the new check.
     # SYNC_NEXT_MESSAGE (10): pop the next inbox item.
     h.upstream.shift.payload.should eq(Bytes[10_u8])
   end
@@ -720,13 +733,11 @@ describe "remaining design acceptance invariants" do
     h.now = 11.seconds
     h.broker.tick(h.now)
     h.flush
-    # SYNC_NEXT_MESSAGE (10): pop the next inbox item.
-    h.upstream.shift.payload.should eq(Bytes[10_u8])
-    # NO_MORE_MESSAGES (0x0a): inbox empty.
-    h.response(Bytes[10_u8])
-    h.downstream[1_i64].should eq([gap_sent])
+    # Polling after lease expiration emits only a downstream MSG_WAITING reminder.
+    h.upstream.should be_empty
+    h.downstream[1_i64].should eq([gap_sent, Bytes[0x83_u8]])
     h.response(result)
-    h.downstream[1_i64].should eq([gap_sent])
+    h.downstream[1_i64].should eq([gap_sent, Bytes[0x83_u8]])
     h.broker.failed.should be_false
 
     # GET_DEVICE_TIME (5): local clock query.
@@ -763,10 +774,8 @@ describe "remaining design acceptance invariants" do
     h.now = 31.seconds
     h.broker.tick(h.now)
     h.flush
-    # SYNC_NEXT_MESSAGE (10): pop the next inbox item.
-    h.upstream.shift.payload.should eq(Bytes[10_u8])
-    # NO_MORE_MESSAGES (0x0a): inbox empty.
-    h.response(Bytes[10_u8])
+    # Polling reminds the client but cannot move companion inbox custody.
+    h.upstream.should be_empty
     # SIGN_FINISH (35/0x23): finish the current signing session and await SIGNATURE.
     h.client(1_i64, Bytes[35_u8])
     # ERR (0x01), BAD_STATE.

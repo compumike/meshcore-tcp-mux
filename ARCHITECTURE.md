@@ -8,8 +8,9 @@ broker, not a second companion implementation:
 - One upstream connection is shared by many independent downstream sessions.
 - Commands are serialized because ordinary responses such as `OK` and `ERR`
   contain no request or client identifier.
-- Incoming messages are fetched once from the companion's destructive inbox and
-  copied into a private, bounded inbox for every connected session.
+- Incoming messages are fetched once after a downstream sync request and copied
+  into connection-scoped multi-client inboxes plus every configured persistent
+  dedicated-client queue.
 - Shared physical state—identity, contacts, channels, configuration, and radio
   capacity—is deliberately not virtualized.
 
@@ -23,7 +24,8 @@ payloads of at most 176 bytes. Its firmware reference is MeshCore commit
 - [`BinaryEntrypoint`](src/meshcore_tcp_mux/binary_entrypoint.cr) parses runtime,
   timeout, maintenance, and diagnostic-probe options. [`main.cr`](src/main.cr)
   remains only the executable wrapper.
-- [`Runtime`](src/meshcore_tcp_mux/runtime.cr) owns the listener, socket
+- [`Runtime`](src/meshcore_tcp_mux/runtime.cr) owns the multi-client listener,
+  every configured dedicated-client listener, socket
   lifecycles, upstream epochs, reconnect policy, and execution of broker
   actions. It is the only caller of `Broker`, which keeps protocol decisions in
   one fiber without mutexes.
@@ -38,10 +40,12 @@ payloads of at most 176 bytes. Its firmware reference is MeshCore commit
   scheduling, response ownership, inbox pumping, push routing, leases, output
   budgets, and failure decisions. It produces typed `Action` values and performs
   no I/O, making the state machine directly testable.
-- [`Session`](src/meshcore_tcp_mux/session.cr) holds one client's command FIFO,
+- [`Session`](src/meshcore_tcp_mux/session.cr) holds one connection's command FIFO,
   virtual inbox, output budget, application-protocol target, pending sync, and
-  desired flood scope. Reconnecting creates a new session rather than resuming
-  durable history.
+  desired flood scope. Reconnecting always creates a new session.
+- [`DedicatedClientSlot`](src/meshcore_tcp_mux/dedicated_client_slot.cr) holds
+  one port-identified client's native offline queue across socket replacements
+  and matching-companion upstream epochs. It is volatile across process restart.
 - [`Protocol`](src/meshcore_tcp_mux/protocol.cr) contains the supported command
   descriptors, payload validators, response grammars, logging descriptions,
   V3-to-legacy inbox conversion, and startup payload builders. Centralizing this
@@ -74,8 +78,8 @@ payloads of at most 176 bytes. Its firmware reference is MeshCore commit
   interleaved with another command.
 - Asynchronous pushes follow an explicit policy: shared observations are
   broadcast, remote results go only to their lease owner, DM confirmations are
-  broadcast and release matching ring capacity, and `MSG_WAITING` wakes the
-  internal inbox pump.
+  broadcast and release matching ring capacity, and `MSG_WAITING` prompts
+  downstream clients without moving inbox custody by itself.
 - Epoch, session, job, and write IDs make late asynchronous completions harmless
   after a connection has been replaced.
 
@@ -89,23 +93,30 @@ The companion's `SYNC_NEXT_MESSAGE` command removes an item from one physical
 queue. Forwarding every client's sync command would divide messages between
 clients, so `Broker` is the sole upstream inbox consumer.
 
-- `MSG_WAITING`, session admission, an empty client sync, or the fallback poll
-  requests an internal pop through the normal scheduler.
-- A returned message is stored as immutable bytes and fanned out to every
-  session present when the pop completes.
+- Admission, `MSG_WAITING`, and fallback polling emit coalesced downstream
+  availability hints but never pop the physical inbox. Only a downstream sync
+  against an empty local queue authorizes a drain-to-empty cycle.
+- A returned message is stored as native immutable bytes and fanned out to every
+  configured dedicated slot, attached or detached, plus every qualifying live
+  multi-client session present when the pop completes.
 - A downstream sync consumes one item from only that session's queue. The broker
   returns `NO_MORE_MESSAGES` only after a qualifying upstream empty check, so a
   stale empty observation cannot overtake an in-flight message.
 - An empty-to-nonempty transition emits one coalesced downstream `MSG_WAITING`
   hint. Notifications are neither counts nor delivery acknowledgements.
-- Queue and output limits isolate a slow client by disconnecting that session.
+- A multi-client inbox overflow disconnects only that session. A dedicated queue
+  instead mirrors firmware priority: at capacity it evicts the oldest channel
+  entry, or discards the new entry if no channel entry exists. Neither outcome
+  can stall other recipients.
 - With no sessions, the broker stops draining the companion. If the last client
   leaves during a pop, at most one unfanned item is retained and reused only
   when the next upstream epoch has the same node public key.
 
-This provides live fan-out, not durable history: new sessions do not receive
-items already distributed, and firmware queue overflow or a lost pop response
-cannot be recovered.
+Multi-client sessions provide live fan-out, not history. Dedicated clients use
+their configured port as stable identity and can retrieve unconsumed queue items
+after reconnect. This is still not durable or exactly-once delivery: queues are
+RAM-only, bounded, and an item is consumed when broker output accepts it rather
+than when the application confirms receipt.
 
 ## Stateful operations
 

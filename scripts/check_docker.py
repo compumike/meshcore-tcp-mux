@@ -39,9 +39,10 @@ async def run(image):
             "create", "--pull", "never", "--name", name, "--network", name,
             "--read-only", "--cap-drop", "ALL",
             "--security-opt", "no-new-privileges:true",
-            "-p", "127.0.0.1::5001", image,
+            "-p", "127.0.0.1::5001", "-p", "127.0.0.1::5002", image,
             "--upstream-host", gateway, "--upstream-port", str(fake.port),
-            "--listen-host", "0.0.0.0", "--listen-port", "5001",
+            "--listen-host", "0.0.0.0", "--listen-multi-client-port", "5001",
+            "--listen-dedicated-client-port", "5002",
         )
         container_created = True
         # Track creation before starting so a failed start still removes the
@@ -53,6 +54,7 @@ async def run(image):
         info = json.loads(await docker("inspect", name))[0]
         assert info["Config"]["User"] == "10001:10001", "runtime must be non-root"
         port = int(info["NetworkSettings"]["Ports"]["5001/tcp"][0]["HostPort"])
+        dedicated_port = int(info["NetworkSettings"]["Ports"]["5002/tcp"][0]["HostPort"])
         # Connect sequentially so a partial failure still leaves every client
         # registered for cleanup. Both remain connected during all assertions.
         for label in ("docker-a", "docker-b"):
@@ -70,12 +72,24 @@ async def run(image):
             for event in events:
                 require_event(event, kind, "container inbox")
                 assert event.payload["text"] == body, "container changed message body"
+        # The dedicated client was detached while multi-client sessions drained
+        # the companion. Its port-identified queue must backfill both messages.
+        dedicated = await connect(dedicated_port, "docker-dedicated")
+        clients.append(dedicated)
+        for kind, body in (
+            (EventType.CONTACT_MSG_RECV, "docker-dm"),
+            (EventType.CHANNEL_MSG_RECV, "docker-channel"),
+        ):
+            event = await dedicated.commands.get_msg(timeout=4)
+            require_event(event, kind, "dedicated reconnect backfill")
+            assert event.payload["text"] == body, "dedicated backfill changed message body"
         # Stop while clients and upstream are connected. Exit zero proves the
         # process handled SIGTERM, rather than Docker falling back to SIGKILL.
         await docker("stop", "--time", "10", name)
         info = json.loads(await docker("inspect", name))[0]
         assert info["State"]["ExitCode"] == 0, "container did not stop gracefully"
-        print(json.dumps({"status": "ok", "clients": 2, "fanout_items": 2,
+        print(json.dumps({"status": "ok", "clients": 3, "fanout_items": 2,
+                          "dedicated_backfill_items": 2,
                           "bridge_network": True, "read_only": True,
                           "non_root": True, "sigterm_exit_code": 0}))
     finally:

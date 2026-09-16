@@ -23,7 +23,15 @@ class MeshCoreTCPMux
         options.on("--upstream-port PORT", "Physical companion port") { |value| port = value.to_i }
         options.on("--probe", "Synchronize and print firmware identification, then exit") { probe = true }
         options.on("--listen-host HOST", "Listener address (default 127.0.0.1)") { |value| config.listen_host = value }
-        options.on("--listen-port PORT", "Listener port (default 5001)") { |value| config.listen_port = value.to_i }
+        options.on("--listen-multi-client-port PORT", "Multi-client listener port (default 5001)") do |value|
+          config.listen_multi_client_port = value.to_i
+        end
+        options.on("--listen-dedicated-client-port PORT", "Dedicated-client listener port (repeatable)") do |value|
+          config.listen_dedicated_client_ports << value.to_i
+        end
+        options.on("--offline-queue-size COUNT", "Per-dedicated-client offline queue entries (default 128)") do |value|
+          config.offline_queue_size = value.to_i
+        end
         options.on("--response-timeout SECONDS", "Upstream response / contacts idle deadline (5)") { |v| config.response_timeout = v.to_f.seconds }
         options.on("--contacts-timeout SECONDS", "Total contacts transaction deadline (30)") { |v| config.contacts_timeout = v.to_f.seconds }
         options.on("--poll-interval SECONDS", "Inbox fallback polling interval (5)") { |v| config.poll_interval = v.to_f.seconds }

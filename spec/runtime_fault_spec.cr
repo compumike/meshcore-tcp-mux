@@ -6,7 +6,7 @@ private def fault_config : MeshCoreTCPMux::Config
   config = MeshCoreTCPMux::Config.new
   config.listen_host = "127.0.0.1"
   listener = TCPServer.new("127.0.0.1", 0)
-  config.listen_port = listener.local_address.port
+  config.listen_multi_client_port = listener.local_address.port
   listener.close
   config.response_timeout = 100.milliseconds
   config.contacts_timeout = 300.milliseconds
@@ -39,7 +39,7 @@ private def await_epoch_ready(companion : SpecSupport::RuntimeCompanion, expecte
 end
 
 private def connect_fault_client(config : MeshCoreTCPMux::Config) : TCPSocket
-  socket = TCPSocket.new("127.0.0.1", config.listen_port)
+  socket = TCPSocket.new("127.0.0.1", config.listen_multi_client_port)
   socket.read_timeout = 2.seconds
   socket
 end
@@ -61,9 +61,14 @@ end
 
 private def admit_client(companion : SpecSupport::RuntimeCompanion, config : MeshCoreTCPMux::Config, epoch : Int32) : TCPSocket
   socket = connect_fault_client(config)
+  # Admission supplies MSG_WAITING, but custody remains upstream until the
+  # client explicitly asks to synchronize its empty local inbox.
+  read_payload(socket, 0x83_u8).should eq(Bytes[0x83_u8])
+  send_command(socket, Bytes[10_u8]) # SYNC_NEXT_MESSAGE.
   next_command(companion, 10_u8, epoch)
   # NO_MORE_MESSAGES (0x0a): inbox empty.
   companion.reply(Bytes[10_u8])
+  read_payload(socket, 10_u8).should eq(Bytes[10_u8])
   socket
 end
 
@@ -112,7 +117,7 @@ private class ListenerFaultRuntime < MeshCoreTCPMux::Runtime
     super("127.0.0.1", port, config)
   end
 
-  protected def create_listener : TCPServer
+  protected def create_listener(port : Int32) : TCPServer
     @listener
   end
 end
@@ -122,6 +127,72 @@ describe MeshCoreTCPMux::Runtime, "fault and epoch boundaries" do
   # Each upstream connection is an epoch; uncertainty closes its downstream clients
   # and must never replay their old commands. Helpers hide framing, not responses:
   # the test explicitly tells the companion when to reply, drop, or close.
+
+  it "retains detached dedicated history and replaces the old dedicated socket" do
+    companion = SpecSupport::RuntimeCompanion.new
+    config = fault_config
+    dedicated_listener = TCPServer.new("127.0.0.1", 0)
+    dedicated_port = dedicated_listener.local_address.port
+    dedicated_listener.close
+    config.listen_dedicated_client_ports << dedicated_port
+    runtime = MeshCoreTCPMux::Runtime.new("127.0.0.1", companion.port, config)
+    runtime_done = Channel(Nil).new(1)
+    spawn do
+      runtime.run
+      runtime_done.send(nil)
+    end
+    await_epoch_ready(companion, 1)
+
+    detached = TCPSocket.new("127.0.0.1", dedicated_port)
+    detached.read_timeout = 2.seconds
+    read_payload(detached, 0x83_u8).should eq(Bytes[0x83_u8]) # MSG_WAITING admission hint.
+    detached.close
+    sleep 100.milliseconds
+
+    puller = connect_fault_client(config)
+    read_payload(puller, 0x83_u8).should eq(Bytes[0x83_u8]) # MSG_WAITING admission hint.
+    send_command(puller, Bytes[10_u8])                      # SYNC_NEXT_MESSAGE.
+    next_command(companion, 10_u8, 1)
+    item = orphan_message
+    companion.reply(item)
+    next_command(companion, 10_u8, 1)
+    companion.reply(Bytes[10_u8]) # NO_MORE_MESSAGES ends the authorized cycle.
+    read_payload(puller, 7_u8).should eq(item)
+
+    attached = TCPSocket.new("127.0.0.1", dedicated_port)
+    attached.read_timeout = 2.seconds
+    read_payload(attached, 0x83_u8).should eq(Bytes[0x83_u8])
+    send_command(attached, Bytes[10_u8]) # Served from the retained slot queue.
+    read_payload(attached, 7_u8).should eq(item)
+
+    replacement = TCPSocket.new("127.0.0.1", dedicated_port)
+    replacement.read_timeout = 2.seconds
+    read_payload(replacement, 0x83_u8).should eq(Bytes[0x83_u8])
+    expect_closed(attached)
+  ensure
+    detached.try &.close
+    puller.try &.close
+    attached.try &.close
+    replacement.try &.close
+    runtime.try &.stop
+    runtime_done.try &.receive
+    companion.try &.stop
+  end
+
+  it "releases an already-bound multi-client listener when a dedicated bind fails" do
+    config = fault_config
+    occupied = TCPServer.new("127.0.0.1", 0)
+    config.listen_dedicated_client_ports << occupied.local_address.port
+    runtime = MeshCoreTCPMux::Runtime.new("127.0.0.1", occupied.local_address.port, config)
+
+    expect_raises(Socket::BindError) { runtime.run }
+    # Rebinding proves startup closed the earlier multi-client listener instead
+    # of exposing a partial listener set after the dedicated-port failure.
+    rebound = TCPServer.new("127.0.0.1", config.listen_multi_client_port)
+  ensure
+    rebound.try &.close
+    occupied.try &.close
+  end
 
   it "times out A without dispatching queued B or replaying it after reconnect" do
     companion = SpecSupport::RuntimeCompanion.new
@@ -223,7 +294,7 @@ describe MeshCoreTCPMux::Runtime, "fault and epoch boundaries" do
     companion = SpecSupport::RuntimeCompanion.new
     config = fault_config
     listener = TCPServer.new("127.0.0.1", 0)
-    config.listen_port = listener.local_address.port
+    config.listen_multi_client_port = listener.local_address.port
     runtime = ListenerFaultRuntime.new(listener, companion.port, config)
     outcome = Channel(Exception?).new(1)
     spawn do
@@ -320,21 +391,26 @@ describe MeshCoreTCPMux::Runtime, "fault and epoch boundaries" do
     # to this same companion and can safely be offered after reconnect.
     companion = SpecSupport::RuntimeCompanion.new([0xa5_u8, 0xa5_u8])
     runtime, config, runtime_done = start_fault_runtime(companion)
+    config.response_timeout = 1.second
     await_epoch_ready(companion, 1)
     departing = admit_client(companion, config, 1)
 
     # MSG_WAITING (0x83): inbox availability hint; fetch the actual body separately.
     companion.push(Bytes[0x83_u8])
+    send_command(departing, Bytes[10_u8]) # SYNC_NEXT_MESSAGE authorizes custody transfer.
     next_command(companion, 10_u8, 1)
-    departing.close
-    # There is intentionally no public runtime hook for client-close handling;
-    # allow its already-readable EOF to reach the broker before the pop result.
-    sleep 20.milliseconds
+    read_payload(departing, 0x83_u8).should eq(Bytes[0x83_u8])
+    # A wrong-direction envelope deterministically closes and removes the final
+    # session before the already-issued physical result is returned.
+    departing.write(MeshCoreTCPMux::FrameCodec.encode(
+      Bytes[5_u8], MeshCoreTCPMux::FrameCodec::COMPANION_TO_CLIENT_MARKER
+    )) # GET_DEVICE_TIME payload in an invalid downstream envelope.
+    expect_closed(departing)
     item = orphan_message
     companion.raw_and_close(MeshCoreTCPMux::FrameCodec.encode(item, MeshCoreTCPMux::FrameCodec::COMPANION_TO_CLIENT_MARKER))
 
     await_epoch_ready(companion, 2)
-    arriving = admit_client(companion, config, 2)
+    arriving = connect_fault_client(config)
     # MSG_WAITING (0x83): inbox availability hint; fetch the actual body separately.
     read_payload(arriving, 0x83_u8).should eq(Bytes[0x83_u8])
     # SYNC_NEXT_MESSAGE (10): pop the next inbox item.
@@ -353,14 +429,19 @@ describe MeshCoreTCPMux::Runtime, "fault and epoch boundaries" do
     # An old companion's orphan must never leak to clients of the new device.
     companion = SpecSupport::RuntimeCompanion.new([0xa5_u8, 0xb6_u8])
     runtime, config, runtime_done = start_fault_runtime(companion)
+    config.response_timeout = 1.second
     await_epoch_ready(companion, 1)
     departing = admit_client(companion, config, 1)
 
     # MSG_WAITING (0x83): inbox availability hint; fetch the actual body separately.
     companion.push(Bytes[0x83_u8])
+    send_command(departing, Bytes[10_u8]) # SYNC_NEXT_MESSAGE authorizes custody transfer.
     next_command(companion, 10_u8, 1)
-    departing.close
-    sleep 20.milliseconds
+    read_payload(departing, 0x83_u8).should eq(Bytes[0x83_u8])
+    departing.write(MeshCoreTCPMux::FrameCodec.encode(
+      Bytes[5_u8], MeshCoreTCPMux::FrameCodec::COMPANION_TO_CLIENT_MARKER
+    )) # Wrong-direction GET_DEVICE_TIME envelope closes the final client.
+    expect_closed(departing)
     companion.raw_and_close(
       MeshCoreTCPMux::FrameCodec.encode(orphan_message, MeshCoreTCPMux::FrameCodec::COMPANION_TO_CLIENT_MARKER)
     )

@@ -10,14 +10,22 @@ class MeshCoreTCPMux
     # Holds one downstream client's command FIFO, independent inbox, requested protocol version,
     # temporary flood scope, and outstanding write budgets. Broker owns and mutates this state.
     getter id : Int64
+    getter dedicated_slot_id : Int32?
     getter commands = Deque(Command).new
     getter inbox = Deque(Bytes).new
     getter writes = Hash(Int64, WriteBudget).new
     property target_version = 0_u8
     property scope : Bytes = Bytes[0x36, 0] # SET_FLOOD_SCOPE_KEY: mode 0 without a key selects default scope.
     property sync : PendingSync? = nil
+    property availability_hint_write_id : Int64? = nil
 
-    def initialize(@id : Int64) : Nil
+    def initialize(@id : Int64, @dedicated_slot_id : Int32? = nil) : Nil
+    end
+
+    def dedicated? : Bool
+      # Dedicated sessions consume their stable slot queue; multi-client
+      # sessions retain the connection-scoped inbox above.
+      !@dedicated_slot_id.nil?
     end
   end
 

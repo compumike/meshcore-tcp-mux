@@ -72,11 +72,13 @@ docker run -d \
   --cap-drop ALL \
   --security-opt no-new-privileges:true \
   -p 127.0.0.1:5001:5001 \
+  -p 127.0.0.1:5002:5002 \
   compumike/meshcore-tcp-mux:latest \
   --upstream-host "$MESHCORE_UPSTREAM_HOST" \
   --upstream-port 5000 \
   --listen-host 0.0.0.0 \
-  --listen-port 5001
+  --listen-multi-client-port 5001 \
+  --listen-dedicated-client-port 5002
 ```
 
 The **container** must listen on `0.0.0.0` for port forwarding to work. The
