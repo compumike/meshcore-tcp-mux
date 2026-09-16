@@ -122,6 +122,10 @@ class FakeCompanion:
         self.query_targets: list[int] = []
         self.time_value = 1_700_000_000
         self.connected = asyncio.Event()
+        # The mux serializes contacts streams, so concurrent real clients see
+        # these modes in order: one immediate/coalescible response and one
+        # delayed response. This exposes client listener-registration races.
+        self.contact_delays: deque[float] = deque((0.0, 0.02))
 
     @property
     def port(self) -> int:
@@ -193,10 +197,9 @@ class FakeCompanion:
         elif opcode == 10:  # SYNC_NEXT_MESSAGE.
             await self.send(self.offline.popleft() if self.offline else bytes([10]))  # NO_MORE_MESSAGES.
         elif opcode == 4:  # GET_CONTACTS.
-            # meshcore_py get_contacts installs stream listeners immediately after
-            # its fire-and-return send. Yield so even an in-process fake cannot
-            # outrun that public API sequence.
-            await asyncio.sleep(0.02)
+            delay = self.contact_delays.popleft() if self.contact_delays else 0.0
+            if delay:
+                await asyncio.sleep(delay)
             await self.send(bytes([2]) + (2).to_bytes(4, "little"))  # CONTACTS_START: two records follow.
             await self.send(contact_record(1))
             await self.send(contact_record(2))

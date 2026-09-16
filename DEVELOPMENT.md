@@ -237,6 +237,11 @@ of the physical upstream through a temporary local relay, drops that TCP
 connection once, and verifies session closure and fresh initialization. Stop
 every other upstream producer before running that check.
 
+The fake-client smoke runs concurrent real `meshcore_py` contacts requests with
+both an immediate response stream and a delayed stream. This intentionally
+keeps the fast local-TCP case in coverage instead of relying on a timing delay
+to let the client install response listeners.
+
 `check_live_dedicated.py` is a bounded real-radio check for one multi-client
 listener, one or more dedicated-client listeners, and a separate hardware test
 companion. It fences both destinations by exact name and full live public key.

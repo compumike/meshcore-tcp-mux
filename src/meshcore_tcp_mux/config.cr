@@ -26,6 +26,10 @@ class MeshCoreTCPMux
     property contacts_timeout = 30.seconds
     property startup_timeout = 15.seconds
     property signing_timeout = 30.seconds
+    # If TCP dies before SENT/ERR, the command may nevertheless have reached
+    # the companion. Keep shared radio admission closed long enough for that
+    # unobservable operation to finish without being overwritten after reconnect.
+    property radio_uncertainty_timeout = 60.seconds
     property poll_interval = 5.seconds
     property maintenance = false
     property private_key_export = false
@@ -41,7 +45,8 @@ class MeshCoreTCPMux
         raise ArgumentError.new("queue budgets must be positive")
       end
       unless {@command_age, @virtual_sync_timeout, @frame_timeout, @write_timeout, @response_timeout, @contacts_timeout,
-              @startup_timeout, @signing_timeout, @poll_interval}.all? { |duration| duration > Time::Span.zero }
+              @startup_timeout, @signing_timeout, @radio_uncertainty_timeout,
+              @poll_interval}.all? { |duration| duration > Time::Span.zero }
         raise ArgumentError.new("deadlines and polling interval must be positive")
       end
       if @contacts_timeout < @response_timeout

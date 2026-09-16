@@ -41,6 +41,8 @@ class MeshCoreTCPMux
     @orphan_key : Bytes? = nil
     @dedicated_slots = Hash(Int32, DedicatedClientSlot).new
     @dedicated_slots_key : Bytes? = nil
+    @radio_state = CompanionRadioState.new
+    @radio_state_key : Bytes? = nil
     @last_malformed_log : Time::Span? = nil
     @suppressed_malformed = 0_u64
 
@@ -96,7 +98,8 @@ class MeshCoreTCPMux
           self_key = startup.self_key.not_nil!
           orphan = orphan_for(self_key)
           prepare_dedicated_slots(self_key)
-          broker = Broker.new(@next_epoch, self_key, @config, Clock.now, orphan, @dedicated_slots)
+          radio_state = radio_state_for(self_key)
+          broker = Broker.new(@next_epoch, self_key, @config, Clock.now, orphan, @dedicated_slots, radio_state)
           ready_at = Clock.now
           LOGGER.info { "event=upstream.ready epoch=#{@next_epoch} remote=#{socket_address(socket.remote_address)} #{startup.identification}" }
           run_epoch(broker, endpoint, upstream_events)
@@ -364,7 +367,11 @@ class MeshCoreTCPMux
       now = Clock.now
       case event
       when Transport::Frame
-        LOGGER.debug { "event=upstream.frame epoch=#{broker.epoch} #{Protocol.describe_response(event.payload, include_payload: true)}" }
+        # Unknown pushes use Broker's complete rate-limited diagnostic path;
+        # logging them here too would restore one debug record per frame.
+        if Protocol.known_response?(event.payload[0])
+          LOGGER.debug { "event=upstream.frame epoch=#{broker.epoch} #{Protocol.describe_response(event.payload, include_payload: true)}" }
+        end
         broker.upstream_frame(event.payload, now)
       when Transport::Closed
         LOGGER.warn { "event=upstream.closed epoch=#{broker.epoch} reason=#{event.reason.inspect}" }
@@ -386,9 +393,13 @@ class MeshCoreTCPMux
         broker.client_frame(event.endpoint, event.payload, now)
       when Transport::Closed
         remote = @clients[event.endpoint]?.try { |endpoint| socket_address(endpoint.socket.remote_address) } || "unknown"
-        LOGGER.info do
-          "event=client.disconnected epoch=#{broker.epoch} session=#{event.endpoint} " \
-          "remote=#{remote} reason=#{event.reason.inspect} category=#{event.category}"
+        # Malformed peers use Broker's rate-limited diagnostic below. Emitting
+        # this parallel info record would otherwise defeat the total log bound.
+        unless event.category == :malformed
+          LOGGER.info do
+            "event=client.disconnected epoch=#{broker.epoch} session=#{event.endpoint} " \
+            "remote=#{remote} reason=#{event.reason.inspect} category=#{event.category}"
+          end
         end
         broker.client_closed(event.endpoint, now, event.reason, event.category)
       when Transport::Written
@@ -501,6 +512,20 @@ class MeshCoreTCPMux
       @orphan = nil
       @orphan_key = nil
       nil
+    end
+
+    private def radio_state_for(self_key : Bytes) : CompanionRadioState
+      # A public-key match cannot prove the node did not reboot, but a mismatch
+      # does prove that old radio reservations belong to another identity. Keep
+      # conservative same-key protection; a real reboot merely waits out it.
+      if previous_key = @radio_state_key
+        unless previous_key == self_key
+          @radio_state = CompanionRadioState.new
+          LOGGER.warn { "event=radio_state.cleared reason=upstream_identity_changed" }
+        end
+      end
+      @radio_state_key = self_key.dup
+      @radio_state
     end
 
     private def wait_with_refusal(duration : Time::Span) : Nil

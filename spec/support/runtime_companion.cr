@@ -69,6 +69,9 @@ class SpecSupport
     def stop : Nil
       return if @stopped
       @stopped = true
+      # A scripted command handler waits on directives rather than the socket.
+      # Wake it before closing so a failed assertion cannot deadlock cleanup.
+      @directives.send(Disconnect.new) if @socket
       @socket.try &.close
       @server.close
       @done.receive

@@ -44,6 +44,17 @@ class MeshCoreTCPMux
       end
     end
 
+    def self.known_response?(code : UInt8) : Bool
+      # Ordinary response codes are a closed native-v13 range. Pushes occupy a
+      # sparse named range; other high codes remain forward-compatible opaque
+      # broadcasts whose diagnostics must take the rate-limited path.
+      code < 0x1d || {
+        0x80_u8, 0x81_u8, 0x82_u8, 0x83_u8, 0x84_u8, 0x85_u8, 0x86_u8,
+        0x87_u8, 0x88_u8, 0x89_u8, 0x8a_u8, 0x8b_u8, 0x8c_u8, 0x8d_u8,
+        0x8e_u8, 0x8f_u8, 0x90_u8,
+      }.includes?(code)
+    end
+
     def self.describe_command(payload : Bytes, include_payload = false) : String
       # Produce the only representation of a client command that may enter logs.
       # Public routing identities remain visible, while credentials, private keys,
@@ -76,12 +87,7 @@ class MeshCoreTCPMux
         summary += " token=#{read_u32(payload, 1)} round_trip_ms=#{read_u32(payload, 5)}"
       end
       if include_payload
-        known = payload[0] < 0x80 || {
-          0x80_u8, 0x81_u8, 0x82_u8, 0x83_u8, 0x84_u8, 0x85_u8, 0x86_u8,
-          0x87_u8, 0x88_u8, 0x89_u8, 0x8a_u8, 0x8b_u8, 0x8c_u8, 0x8d_u8,
-          0x8e_u8, 0x8f_u8, 0x90_u8,
-        }.includes?(payload[0])
-        summary += known ? " payload=#{redacted_hex(payload, response_redactions(payload))}" : " payload=<redacted-unknown-push>"
+        summary += known_response?(payload[0]) ? " payload=#{redacted_hex(payload, response_redactions(payload))}" : " payload=<redacted-unknown-push>"
       end
       summary
     end
@@ -158,7 +164,10 @@ class MeshCoreTCPMux
       return [] of Range(Int32, Int32) if payload.empty?
       case payload[0]
       when 0x0d # DEVICE_INFO: bytes 4..7 contain the device PIN.
-        payload.size >= 8 ? [4..7] : [] of Range(Int32, Int32)
+        # Logging happens before shape validation so malformed responses remain
+        # diagnosable. Redact whichever PIN bytes are present even when the
+        # fixed 82-byte response was truncated inside this field.
+        payload.size > 4 ? [4..Math.min(7, payload.size - 1)] : [] of Range(Int32, Int32)
       when 0x0e # PRIVATE_KEY: all bytes after the response code are secret.
         payload.size > 1 ? [1..(payload.size - 1)] : [] of Range(Int32, Int32)
       when 0x12 # CHANNEL_INFO: code, index, 32-byte name, then the channel key.
@@ -430,9 +439,10 @@ class MeshCoreTCPMux
         n >= 65
       when 25 # SEND_RAW_DATA: signed path length, path bytes, and at least four data bytes.
         return false if n < 6
-        # High-bit values represent unsupported negative paths. Reject before
-        # narrowing: UInt8#to_i8 would throw and end every client's epoch.
-        return false if p[1] >= 0x80
+        # Native command parsing treats this byte as a literal path-byte count,
+        # but sendDirect later interprets its upper two bits as the ordinary
+        # encoded hash width. Only 0..63 has one unambiguous interpretation.
+        return false if p[1] >= 0x40
         path_len = p[1].to_i
         2 + path_len + 4 <= n
       when 26 # SEND_LOGIN: 32-byte peer key, followed by optional credentials.

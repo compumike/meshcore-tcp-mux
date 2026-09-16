@@ -89,25 +89,70 @@ private def expect_closed(socket : TCPSocket) : Nil
   end
 end
 
-private def read_payload(socket : TCPSocket, opcode : UInt8) : Bytes
-  decoder = MeshCoreTCPMux::FrameCodec::Decoder.new(MeshCoreTCPMux::FrameCodec::COMPANION_TO_CLIENT_MARKER)
-  # Socket read scratch space; capacity is arbitrary and is not a protocol field.
-  buffer = Bytes.new(256)
-  loop do
-    count = socket.read(buffer)
-    raise IO::EOFError.new("socket closed before response") if count == 0
-    found : Bytes? = nil
-    decoder.feed(buffer[0, count], MeshCoreTCPMux::Clock.now) do |payload|
-      found = payload if payload[0] == opcode
-    end
-    return found.not_nil! if found
+private class FaultFrameReader
+  # Retains one downstream TCP decoder and every completed frame for the life of
+  # a test socket. Tests consume the stream in order, so a coalesced duplicate or
+  # unexpected ordinary response cannot disappear while searching by opcode.
+  @decoder = MeshCoreTCPMux::FrameCodec::Decoder.new(MeshCoreTCPMux::FrameCodec::COMPANION_TO_CLIENT_MARKER)
+  @frames = Deque(Bytes).new
+
+  def feed(bytes : Bytes, now : Time::Span) : Nil
+    @decoder.feed(bytes, now) { |payload| @frames << payload }
   end
+
+  def next_payload(socket : TCPSocket) : Bytes
+    loop do
+      if payload = @frames.shift?
+        return payload
+      end
+      # Socket read scratch space; capacity is arbitrary and is not a protocol field.
+      buffer = Bytes.new(256)
+      count = socket.read(buffer)
+      raise IO::EOFError.new("socket closed before response") if count == 0
+      feed(buffer[0, count], MeshCoreTCPMux::Clock.now)
+    end
+  end
+
+  def queued_payloads : Array(Bytes)
+    @frames.to_a
+  end
+end
+
+FAULT_FRAME_READERS = Hash(TCPSocket, FaultFrameReader).new
+
+private def read_payload(socket : TCPSocket, opcode : UInt8) : Bytes
+  payload = FAULT_FRAME_READERS.put_if_absent(socket) { FaultFrameReader.new }.next_payload(socket)
+  payload[0].should eq(opcode), "unexpected response before opcode #{opcode}: #{payload[0]}"
+  payload
 end
 
 private def orphan_message : Bytes
   # Minimal legacy CONTACT_MESSAGE: opcode 7, six-byte sender prefix, path/type bytes, u32
   # timestamp; no text body.
   Bytes.new(13, 0_u8).tap { |payload| payload[0] = 7_u8 }
+end
+
+private def fault_status_request(peer_seed = 1_u8) : Bytes
+  # SEND_STATUS_REQ (27): opcode plus a synthetic 32-byte peer key. Firmware
+  # correlates the eventual result by only the first six peer bytes.
+  Bytes.new(33, 0_u8).tap do |payload|
+    payload[0] = 27_u8
+    6.times { |index| payload[1 + index] = peer_seed &+ index.to_u8 }
+  end
+end
+
+private def fault_status_result(peer_seed = 1_u8) : Bytes
+  # STATUS_RESPONSE (0x87): reserved metadata byte, the six-byte peer prefix,
+  # and one synthetic status byte. It has no request or TCP-epoch identifier.
+  Bytes[0x87_u8, 0_u8] + Bytes.new(6) { |index| peer_seed &+ index.to_u8 } + Bytes[0_u8]
+end
+
+private def fault_sent(timeout_ms = 30_000_u32) : Bytes
+  # SENT (0x06): routing type 1, synthetic u32 token 0x04030201, and the
+  # firmware's suggested radio timeout as a four-byte little-endian integer.
+  Bytes[6_u8, 1_u8, 1_u8, 2_u8, 3_u8, 4_u8,
+    (timeout_ms & 0xff).to_u8, ((timeout_ms >> 8) & 0xff).to_u8,
+    ((timeout_ms >> 16) & 0xff).to_u8, ((timeout_ms >> 24) & 0xff).to_u8]
 end
 
 private class ListenerFaultRuntime < MeshCoreTCPMux::Runtime
@@ -127,6 +172,33 @@ describe MeshCoreTCPMux::Runtime, "fault and epoch boundaries" do
   # Each upstream connection is an epoch; uncertainty closes its downstream clients
   # and must never replay their old commands. Helpers hide framing, not responses:
   # the test explicitly tells the companion when to reply, drop, or close.
+
+  it "preserves coalesced, duplicate, and split frames in the test reader" do
+    first = MeshCoreTCPMux::FrameCodec.encode(
+      Bytes[9_u8, 1_u8, 0_u8, 0_u8, 0_u8], # CURRENT_TIME (0x09), timestamp 1 (u32 LE).
+      MeshCoreTCPMux::FrameCodec::COMPANION_TO_CLIENT_MARKER
+    )
+    second = MeshCoreTCPMux::FrameCodec.encode(
+      Bytes[9_u8, 2_u8, 0_u8, 0_u8, 0_u8], # Duplicate CURRENT_TIME opcode, timestamp 2 (u32 LE).
+      MeshCoreTCPMux::FrameCodec::COMPANION_TO_CLIENT_MARKER
+    )
+    third = MeshCoreTCPMux::FrameCodec.encode(
+      Bytes[13_u8, 3_u8], # Synthetic different opcode after the duplicates.
+      MeshCoreTCPMux::FrameCodec::COMPANION_TO_CLIENT_MARKER
+    )
+    wire = first + second + third
+
+    (0..wire.size).each do |split|
+      reader = FaultFrameReader.new
+      reader.feed(wire[0, split], Time::Span.zero)
+      reader.feed(wire[split, wire.size - split], 1.millisecond)
+      reader.queued_payloads.should eq([
+        Bytes[9_u8, 1_u8, 0_u8, 0_u8, 0_u8],
+        Bytes[9_u8, 2_u8, 0_u8, 0_u8, 0_u8],
+        Bytes[13_u8, 3_u8],
+      ])
+    end
+  end
 
   it "retains detached dedicated history and replaces the old dedicated socket" do
     companion = SpecSupport::RuntimeCompanion.new
@@ -261,18 +333,152 @@ describe MeshCoreTCPMux::Runtime, "fault and epoch boundaries" do
     end
   end
 
-  it "rejects a negative raw path locally and keeps both clients in the same epoch" do
+  it "retains an accepted remote lease across a same-identity upstream reconnect" do
+    companion = SpecSupport::RuntimeCompanion.new
+    runtime, config, runtime_done = start_fault_runtime(companion)
+    await_epoch_ready(companion, 1)
+    original = admit_client(companion, config, 1)
+    status = fault_status_request
+
+    send_command(original, status)
+    next_command(companion, 27_u8, 1).payload.should eq(status) # SEND_STATUS_REQ.
+    # SENT accepts the radio request. The pending radio result remains possible
+    # in the fake object independently of later TCP transport replacement.
+    companion.reply(fault_sent)
+    read_payload(original, 6_u8).should eq(fault_sent)
+    send_command(original, Bytes[5_u8]) # GET_DEVICE_TIME gives the fake a deterministic close point.
+    next_command(companion, 5_u8, 1)
+    companion.disconnect
+    expect_closed(original)
+
+    await_epoch_ready(companion, 2)
+    replacement = admit_client(companion, config, 2)
+    send_command(replacement, status)
+    # ERR (0x01), BAD_STATE (0x04): the old same-peer lease still owns the
+    # companion's untagged result slot and the command never goes upstream.
+    read_payload(replacement, 1_u8).should eq(Bytes[1_u8, 4_u8])
+    send_command(replacement, fault_status_request(0x21_u8))
+    read_payload(replacement, 1_u8).should eq(Bytes[1_u8, 4_u8])
+
+    # The old STATUS_RESPONSE arrives on the replacement TCP connection. It
+    # clears the ownerless old lease but must not be delivered to replacement.
+    companion.push(fault_status_result)
+    send_command(replacement, Bytes[5_u8]) # GET_DEVICE_TIME remains safe during radio uncertainty.
+    next_command(companion, 5_u8, 2)
+    current_time = Bytes[9_u8, 1_u8, 0_u8, 0_u8, 0_u8] # CURRENT_TIME, timestamp 1 (u32 LE).
+    companion.reply(current_time)
+    read_payload(replacement, 9_u8).should eq(current_time)
+
+    # Once the old result has settled its lease, a new request can be accepted.
+    send_command(replacement, status)
+    next_command(companion, 27_u8, 2).payload.should eq(status)
+    companion.reply(Bytes[1_u8, 4_u8]) # ERR(BAD_STATE): finish the synthetic request.
+    read_payload(replacement, 1_u8).should eq(Bytes[1_u8, 4_u8])
+  ensure
+    original.try &.close
+    replacement.try &.close
+    runtime.try &.stop
+    runtime_done.try &.receive
+    companion.try &.stop
+  end
+
+  it "quarantines radio work whose acceptance was unobserved across reconnect" do
+    companion = SpecSupport::RuntimeCompanion.new
+    runtime, config, runtime_done = start_fault_runtime(companion)
+    config.radio_uncertainty_timeout = 1.second
+    await_epoch_ready(companion, 1)
+    original = admit_client(companion, config, 1)
+    status = fault_status_request
+
+    send_command(original, status)
+    next_command(companion, 27_u8, 1)
+    # The fake may have executed SEND_STATUS_REQ, but closes before returning
+    # SENT. Runtime must neither replay it nor call the radio state empty.
+    companion.disconnect
+    expect_closed(original)
+
+    await_epoch_ready(companion, 2)
+    replacement = admit_client(companion, config, 2)
+    send_command(replacement, status)
+    read_payload(replacement, 1_u8).should eq(Bytes[1_u8, 4_u8]) # ERR(BAD_STATE).
+
+    # SEND_TXT_MSG (2): plain DM type 0, attempt 1, timestamp 1 (u32 LE),
+    # synthetic six-byte peer key, and one-byte body. The global quarantine
+    # protects firmware acknowledgement state whose acceptance is also unknown.
+    dm = Bytes[2_u8, 0_u8, 1_u8, 1_u8, 0_u8, 0_u8, 0_u8,
+      1_u8, 2_u8, 3_u8, 4_u8, 5_u8, 6_u8, 'x'.ord.to_u8]
+    send_command(replacement, dm)
+    read_payload(replacement, 1_u8).should eq(Bytes[1_u8, 4_u8]) # ERR(BAD_STATE).
+
+    companion.push(fault_status_result)
+    send_command(replacement, Bytes[5_u8]) # GET_DEVICE_TIME remains available.
+    next_command(companion, 5_u8, 2)
+    current_time = Bytes[9_u8, 2_u8, 0_u8, 0_u8, 0_u8] # CURRENT_TIME, timestamp 2 (u32 LE).
+    companion.reply(current_time)
+    read_payload(replacement, 9_u8).should eq(current_time)
+  ensure
+    original.try &.close
+    replacement.try &.close
+    runtime.try &.stop
+    runtime_done.try &.receive
+    companion.try &.stop
+  end
+
+  it "clears retained radio reservations after a proven identity change" do
+    # Different synthetic key markers model replacement by another companion.
+    # A same-key reboot cannot be proven by this legacy protocol and therefore
+    # deliberately follows the conservative retention behavior tested above.
+    companion = SpecSupport::RuntimeCompanion.new([0xa5_u8, 0xb6_u8])
+    runtime, config, runtime_done = start_fault_runtime(companion)
+    await_epoch_ready(companion, 1)
+    original = admit_client(companion, config, 1)
+    status = fault_status_request
+
+    send_command(original, status)
+    next_command(companion, 27_u8, 1)
+    companion.reply(fault_sent)
+    read_payload(original, 6_u8).should eq(fault_sent) # SENT: old identity accepted radio work.
+    send_command(original, Bytes[5_u8])                # GET_DEVICE_TIME supplies a deterministic close point.
+    next_command(companion, 5_u8, 1)
+    companion.disconnect
+    expect_closed(original)
+
+    await_epoch_ready(companion, 2)
+    replacement = admit_client(companion, config, 2)
+    send_command(replacement, status)
+    # The different validated public key proves the retained lease cannot
+    # belong to this node, so SEND_STATUS_REQ reaches the new companion.
+    next_command(companion, 27_u8, 2).payload.should eq(status)
+    companion.reply(Bytes[1_u8, 4_u8]) # ERR(BAD_STATE): finish the synthetic request.
+    read_payload(replacement, 1_u8).should eq(Bytes[1_u8, 4_u8])
+  ensure
+    original.try &.close
+    replacement.try &.close
+    runtime.try &.stop
+    runtime_done.try &.receive
+    companion.try &.stop
+  end
+
+  it "rejects ambiguous and negative raw paths locally and keeps both clients in the same epoch" do
     companion = SpecSupport::RuntimeCompanion.new
     runtime, config, runtime_done = start_fault_runtime(companion)
     await_epoch_ready(companion, 1)
     healthy = admit_client(companion, config, 1)
     malformed = admit_client(companion, config, 1)
 
-    # SEND_RAW_DATA (25): -1 encoded as 0xff in its signed path field, then
-    # four synthetic bytes. The envelope is valid; the command shape is not.
-    send_command(malformed, Bytes[25_u8, 0xff_u8, 0_u8, 0_u8, 0_u8, 0_u8])
-    # ERR (1), ILLEGAL_ARG (6): rejection belongs only to the malformed sender.
-    read_payload(malformed, 1_u8).should eq(Bytes[1_u8, 6_u8])
+    fixtures = [
+      # SEND_RAW_DATA (25): byte 0x40 makes the command parser skip 64 literal
+      # path bytes, but packet routing decodes it as zero two-byte hashes.
+      Bytes.new(70, 0_u8).tap { |payload| payload[0] = 25_u8; payload[1] = 0x40_u8 },
+      # SEND_RAW_DATA (25): -1 encoded as 0xff in the signed native field,
+      # followed by the minimum four synthetic data bytes.
+      Bytes[25_u8, 0xff_u8, 0_u8, 0_u8, 0_u8, 0_u8],
+    ]
+    fixtures.each do |payload|
+      send_command(malformed, payload)
+      # ERR (1), ILLEGAL_ARG (6): rejection belongs only to the malformed sender.
+      read_payload(malformed, 1_u8).should eq(Bytes[1_u8, 6_u8])
+    end
     [healthy, malformed].each do |client|
       send_command(client, Bytes[5_u8]) # GET_DEVICE_TIME: verify continued progress.
       # The next physical command is the query in epoch 1, never SEND_RAW_DATA.

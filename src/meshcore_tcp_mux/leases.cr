@@ -143,6 +143,16 @@ class MeshCoreTCPMux
       clear
     end
 
+    def acceptance_unknown(deadline : Time::Span) : Nil
+      # TCP can fail after the command reaches firmware but before SENT reaches
+      # the mux. Convert the tentative reservation into an ownerless lease so a
+      # matching late result is consumed and no replacement session can inherit it.
+      raise InvalidStateError.new("remote reservation is not tentative") unless @kind && @tentative
+      @owner = nil
+      @deadline = deadline
+      @tentative = false
+    end
+
     def match(push : Bytes, now : Time::Span) : Int64?
       # Returns the live owner for a matching result. A match always releases the
       # lease, including when the owner has disconnected and the return is nil.
@@ -239,6 +249,36 @@ class MeshCoreTCPMux
       @trace_auth = nil
       @deadline = nil
       @tentative = false
+    end
+  end
+
+  class CompanionRadioState
+    # Owns radio work that survives replacement of the companion's TCP socket.
+    # Runtime retains this object only while startup proves the same public key;
+    # Broker removes downstream owners but preserves deadlines and ring position.
+    getter dm_ring = DmRing.new
+    getter remote = RemoteLease.new
+
+    @uncertain_until : Time::Span?
+
+    def quarantined?(now : Time::Span) : Bool
+      deadline = @uncertain_until
+      return false unless deadline
+      if now >= deadline
+        @uncertain_until = nil
+        return false
+      end
+      true
+    end
+
+    def quarantine(now : Time::Span, duration : Time::Span) : Time::Span
+      # Unknown acceptance has no returned firmware timeout. A finite policy
+      # bound cannot prove that every late packet vanished, but it prevents
+      # immediate reuse and is deliberately longer than ordinary TCP deadlines.
+      deadline = now + duration
+      current = @uncertain_until
+      @uncertain_until = deadline if current.nil? || deadline > current
+      @uncertain_until.not_nil!
     end
   end
 

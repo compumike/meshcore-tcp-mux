@@ -79,6 +79,21 @@ private def stateful_dm : Bytes
 end
 
 describe "broker stateful operations" do
+  it "rate-limits broker diagnostics for unknown pushes" do
+    h = StatefulHarness.new
+    h.diagnostics.clear
+    10.times do |index|
+      # Unknown asynchronous push 0xfe with an opaque synthetic body. Delivery
+      # still reaches both clients; only diagnostics are coalesced.
+      h.response(Bytes[0xfe_u8, index.to_u8])
+    end
+    h.replies[1_i64].select { |payload| payload[0] == 0xfe }.size.should eq(10)
+    h.replies[2_i64].select { |payload| payload[0] == 0xfe }.size.should eq(10)
+    unknown_logs = h.diagnostics.select { |diagnostic| diagnostic.message.includes?("unknown_push") }
+    unknown_logs.size.should eq(1)
+    h.diagnostics.count { |diagnostic| diagnostic.message.includes?("response=push_254") }.should eq(0)
+  end
+
   it "logs transaction metadata without logging private response bytes" do
     config = MeshCoreTCPMux::Config.new
     # Enable export only for this test; the fake key must reach its requester,

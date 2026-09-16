@@ -12,6 +12,7 @@ describe MeshCoreTCPMux::Config do
     config.offline_queue_size.should eq(256)
     config.command_age.should eq(15.seconds)
     config.virtual_sync_timeout.should eq(15.seconds)
+    config.radio_uncertainty_timeout.should eq(60.seconds)
   end
 
   it "accepts any number of unique dedicated-client ports" do
@@ -39,6 +40,12 @@ describe MeshCoreTCPMux::Config do
   it "rejects a nonpositive virtual sync deadline" do
     config = MeshCoreTCPMux::Config.new
     config.virtual_sync_timeout = Time::Span.zero
+    expect_raises(ArgumentError, /deadlines/) { config.validate! }
+  end
+
+  it "rejects a nonpositive unknown-radio-acceptance quarantine" do
+    config = MeshCoreTCPMux::Config.new
+    config.radio_uncertainty_timeout = Time::Span.zero
     expect_raises(ArgumentError, /deadlines/) { config.validate! }
   end
 

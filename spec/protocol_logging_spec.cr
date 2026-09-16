@@ -62,6 +62,20 @@ describe "protocol-safe logging" do
     LoggingProtocol.describe_response(status).should contain("peer=91b4f252f8eb")
   end
 
+  it "redacts every present PIN byte in truncated device information" do
+    (1..7).each do |size|
+      # Truncated DEVICE_INFO (0x0d): offsets 4..7 are the little-endian PIN.
+      # The conspicuous 0x49 bytes prove pre-validation debug formatting never
+      # reveals even a partial secret field.
+      device = Bytes.new(size, 0_u8)
+      device[0] = 0x0d_u8
+      device[4, size - 4].fill(0x49_u8) if size > 4
+      log = LoggingProtocol.describe_response(device, include_payload: true)
+      log.should_not contain("49") if size > 4
+      log.should contain("xx" * (size - 4)) if size > 4
+    end
+  end
+
   it "redacts the body of unknown commands and pushes" do
     LoggingProtocol.describe_command(Bytes[0xfe, 0x53, 0x53], include_payload: true)
       .should contain("payload=<redacted-unknown-command>")

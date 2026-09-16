@@ -123,6 +123,17 @@ than when the application confirms receipt.
 - Remote commands reserve `RemoteLease` beyond their immediate `SENT` response,
   because the later radio result otherwise has no client identity. Same-peer
   legacy replies can still be causally ambiguous; the mux does not invent tags.
+- Accepted remote leases and direct-message acknowledgement-ring positions
+  survive replacement of the upstream TCP socket when startup identifies the
+  same companion. Their old downstream owners are removed, so late results are
+  consumed or broadcast according to their native type but never attributed to
+  a replacement session. If TCP fails before `SENT` or `ERR`, new radio work is
+  quarantined for a finite conservative interval because execution is unknown;
+  ordinary queries remain available. A changed public key clears this state.
+  Protocol v13 cannot distinguish a same-key reboot from a reconnect. The mux
+  therefore preserves reconnect safety and waits out retained deadlines, but a
+  reboot can reset the firmware's DM-ring cursor without an observable marker;
+  perfect post-reboot ring alignment is not claimable without firmware support.
 - Signing reserves `SigningLease` across start, data chunks, and finish so
   another client cannot corrupt the shared signing operation.
 - Plain direct messages reserve the firmware's eight acknowledgement slots in
@@ -143,7 +154,9 @@ They do not block unrelated local queries or inbox work.
 - Malformed or slow downstream clients are closed independently.
 - A malformed upstream frame, unexpected ordinary response, upstream write
   failure, or uncertain response timeout ends the entire epoch. All sessions
-  disconnect and no possibly executed command is replayed.
+  disconnect and no possibly executed command is replayed. Radio reservations
+  belong to the companion execution lifetime rather than the TCP epoch and are
+  retained as described above.
 - `Runtime` reconnects with bounded exponential backoff and repeats the startup
   fence before accepting new clients.
 - Reboot uses normal scheduling and ends when the companion disconnects.

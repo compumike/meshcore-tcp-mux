@@ -137,6 +137,23 @@ describe MeshCoreTCPMux::RemoteLease do
     lease.occupied?(13.seconds).should be_false
   end
 
+  it "turns unknown acceptance into an ownerless matching lease" do
+    lease = MeshCoreTCPMux::RemoteLease.new
+    lease.reserve(10_i64, command(27, 1, peer), 0.seconds)
+    lease.acceptance_unknown(60.seconds)
+    lease.tentative?.should be_false
+    lease.owner.should be_nil
+    lease.occupied?(1.second).should be_true
+    # STATUS_RESPONSE (0x87): reserved metadata, six-byte peer prefix, and one
+    # synthetic status byte. It settles the old operation without a recipient.
+    lease.match(peer_push(0x87, peer), 1.second).should be_nil
+    lease.occupied?(1.second).should be_false
+
+    lease.reserve(11_i64, command(27, 1, peer), 2.seconds)
+    lease.acceptance_unknown(60.seconds)
+    lease.occupied?(60.seconds).should be_false
+  end
+
   it "matches binary results by the actual SENT tag, not peer or command bytes" do
     lease = MeshCoreTCPMux::RemoteLease.new
     lease.reserve(5_i64, command(50, 1, peer), 0.seconds)

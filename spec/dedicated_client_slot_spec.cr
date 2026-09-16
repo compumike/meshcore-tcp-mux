@@ -125,6 +125,66 @@ describe MeshCoreTCPMux::Broker, "dedicated client queues" do
     broker.sessions[11_i64].target_version.should eq(0_u8)
   end
 
+  it "does not transfer an active contacts stream or queued commands to a replacement" do
+    slot = MeshCoreTCPMux::DedicatedClientSlot.new(5002, 5002)
+    broker = MeshCoreTCPMux::Broker.new(
+      3_i64, Bytes.new(32, 0x67_u8), dedicated_slots: {5002 => slot}
+    )
+    broker.admit(10_i64, Time::Span.zero, 5002)
+    broker.take_actions
+    broker.client_frame(10_i64, Bytes[4_u8], Time::Span.zero) # GET_CONTACTS.
+    dedicated_sends(broker.take_actions, 0_i64).map(&.payload).should eq([Bytes[4_u8]])
+    broker.client_frame(10_i64, Bytes[5_u8], Time::Span.zero) # Queued GET_DEVICE_TIME belongs to old session.
+
+    # CONTACTS_START (0x02): count one (u32 LE). It is visible only to the old
+    # owner and does not complete the streamed transaction.
+    broker.upstream_frame(Bytes[2_u8, 1_u8, 0_u8, 0_u8, 0_u8], 1.millisecond)
+    dedicated_sends(broker.take_actions, 10_i64).map(&.payload).should eq([
+      Bytes[2_u8, 1_u8, 0_u8, 0_u8, 0_u8],
+    ])
+    broker.admit(11_i64, 2.milliseconds, 5002)
+    replacement_actions = broker.take_actions
+    replacement_actions.compact_map(&.as?(MeshCoreTCPMux::CloseSession)).map(&.session).should eq([10_i64])
+    broker.client_frame(11_i64, Bytes[20_u8], 2.milliseconds) # GET_BATT_AND_STORAGE queues behind old stream.
+    dedicated_sends(broker.take_actions, 0_i64).should be_empty
+
+    # CONTACT (0x03): complete 148-byte synthetic native contact record.
+    contact = Bytes.new(148, 0_u8).tap { |payload| payload[0] = 0x03_u8 }
+    broker.upstream_frame(contact, 3.milliseconds)
+    dedicated_sends(broker.take_actions, 11_i64).should be_empty
+    # END_OF_CONTACTS (0x04): u32 LE last-modified timestamp zero. Only now may
+    # the replacement's query dispatch; the old queued GET_DEVICE_TIME vanished.
+    broker.upstream_frame(Bytes[4_u8, 0_u8, 0_u8, 0_u8, 0_u8], 4.milliseconds)
+    actions = broker.take_actions
+    dedicated_sends(actions, 11_i64).should be_empty
+    dedicated_sends(actions, 0_i64).map(&.payload).should eq([Bytes[20_u8]])
+  end
+
+  it "does not inherit a replaced session's pending sync" do
+    slot = MeshCoreTCPMux::DedicatedClientSlot.new(5002, 5002)
+    broker = MeshCoreTCPMux::Broker.new(
+      4_i64, Bytes.new(32, 0x68_u8), dedicated_slots: {5002 => slot}
+    )
+    broker.admit(10_i64, Time::Span.zero, 5002)
+    broker.take_actions
+    broker.client_frame(10_i64, Bytes[10_u8], Time::Span.zero) # SYNC_NEXT_MESSAGE authorizes one physical pop.
+    dedicated_sends(broker.take_actions, 0_i64).map(&.payload).should eq([Bytes[10_u8]])
+
+    broker.admit(11_i64, 1.millisecond, 5002)
+    broker.take_actions
+    item = direct_inbox_item(8_u8)
+    broker.upstream_frame(item, 2.milliseconds)
+    # The physical result is retained exactly once for the stable slot. The new
+    # socket receives only availability hints until it issues its own sync.
+    actions = broker.take_actions
+    dedicated_sends(actions, 11_i64).map(&.payload).should_not contain(item)
+    slot.offline_queue.to_a.should eq([item])
+
+    broker.client_frame(11_i64, Bytes[10_u8], 3.milliseconds) # New session's own SYNC_NEXT_MESSAGE.
+    dedicated_sends(broker.take_actions, 11_i64).map(&.payload).should eq([item])
+    slot.offline_queue.should be_empty
+  end
+
   it "continues fan-out when one dedicated queue discards at capacity" do
     config = MeshCoreTCPMux::Config.new
     config.offline_queue_size = 1

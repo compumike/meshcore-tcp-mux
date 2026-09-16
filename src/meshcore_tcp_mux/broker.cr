@@ -51,6 +51,7 @@ class MeshCoreTCPMux
     getter failed = false
     getter orphan : Bytes? = nil
     getter dedicated_slots : Hash(Int32, DedicatedClientSlot)
+    getter radio_state : CompanionRadioState
     @order = Deque(Int64).new([0_i64])
     @next_write = 0_i64
     @upstream_writes = Hash(Int64, Time::Span).new
@@ -60,8 +61,8 @@ class MeshCoreTCPMux
     @drain_authorized = false
     @last_poll : Time::Span
     @now = Time::Span.zero
-    @dm_ring = DmRing.new
-    @remote = RemoteLease.new
+    @dm_ring : DmRing
+    @remote : RemoteLease
     @signing = SigningLease.new
     @counters = Hash(Symbol, UInt64).new(0_u64)
     @last_unknown_log : Time::Span? = nil
@@ -71,8 +72,11 @@ class MeshCoreTCPMux
 
     def initialize(@epoch : Int64, @self_key : Bytes, @config = Config.new, now = Time::Span.zero,
                    @orphan : Bytes? = nil,
-                   @dedicated_slots = Hash(Int32, DedicatedClientSlot).new) : Nil
+                   @dedicated_slots = Hash(Int32, DedicatedClientSlot).new,
+                   @radio_state = CompanionRadioState.new) : Nil
       @last_poll = now
+      @dm_ring = @radio_state.dm_ring
+      @remote = @radio_state.remote
       @signing = SigningLease.new(@config.signing_timeout)
     end
 
@@ -162,6 +166,7 @@ class MeshCoreTCPMux
 
     def write_failed(id : Int64, epoch : Int64, reason : String, now : Time::Span) : Nil
       return unless epoch == @epoch && !@failed
+      @now = now
       if id == 0
         fail_epoch("upstream write failed: #{reason}")
       else
@@ -232,6 +237,7 @@ class MeshCoreTCPMux
     def fail_epoch(reason : String) : Nil
       # Discard uncertain upstream ownership and disconnect all clients. Never replay a possibly executed command.
       return if @failed
+      preserve_radio_uncertainty
       @failed = true
       @actions << Diagnostic.new("epoch=#{@epoch} failed reason=#{reason.inspect}")
       @sessions.keys.each { |id| remove(id, "upstream epoch failed") }
@@ -248,6 +254,27 @@ class MeshCoreTCPMux
       @drain_requested = true
       @notification_generation += 1
       @actions << Diagnostic.new("event=inbox.drain_requested epoch=#{@epoch} generation=#{@notification_generation}", :debug)
+    end
+
+    private def preserve_radio_uncertainty : Nil
+      # A command-step transport failure may occur after firmware executed the
+      # write but before its immediate reply arrived. Scope setup has not sent
+      # the user's command yet; restoration happens only after its reply was
+      # already classified, so only Command is an unknown-acceptance boundary.
+      return unless transaction = @active
+      if transaction.step.setup?
+        @remote.rejected if transaction.descriptor.flags.includes?(Protocol::CommandFlags::RemoteLease)
+        return
+      end
+      return unless transaction.step.command?
+      remote = transaction.descriptor.flags.includes?(Protocol::CommandFlags::RemoteLease)
+      return unless remote || Protocol.plain_dm?(transaction.command)
+
+      deadline = @radio_state.quarantine(@now, @config.radio_uncertainty_timeout)
+      @remote.acceptance_unknown(deadline) if remote && @remote.tentative?
+      @actions << Diagnostic.new("event=radio_state.quarantined epoch=#{@epoch} " \
+                                 "until_ms=#{deadline.total_milliseconds.round} " \
+                                 "#{Protocol.describe_command(transaction.command)}", :warn)
     end
 
     private def record_availability_hint : Nil
@@ -446,13 +473,14 @@ class MeshCoreTCPMux
       # Reboot keeps the disruptive-operation lifecycle, but has no maintenance
       # permission, single-client, or idle-radio prerequisite.
       if descriptor.flags.includes?(Protocol::CommandFlags::Maintenance) && command[0] != 19 # 19 = REBOOT.
-        if @sessions.size != 1 || @remote.occupied?(now) || @dm_ring.pending_count(now) > 0 || @signing.occupied?(now)
+        if @sessions.size != 1 || @radio_state.quarantined?(now) || @remote.occupied?(now) ||
+           @dm_ring.pending_count(now) > 0 || @signing.occupied?(now)
           reason = 4_u8 # BAD_STATE: shared resource is unavailable.
         end
-      elsif Protocol.plain_dm?(command) && !@dm_ring.available?(now)
+      elsif Protocol.plain_dm?(command) && (@radio_state.quarantined?(now) || !@dm_ring.available?(now))
         reason = 4_u8 # BAD_STATE: shared resource is unavailable.
       elsif descriptor.flags.includes?(Protocol::CommandFlags::RemoteLease)
-        if @remote.reserve(owner, command, now)
+        if !@radio_state.quarantined?(now) && @remote.reserve(owner, command, now)
           @actions << Diagnostic.new("event=remote_lease.reserved epoch=#{@epoch} session=#{owner} " \
                                      "kind=#{@remote.kind.not_nil!.to_s.underscore} #{Protocol.describe_command(command)}")
         else
@@ -644,17 +672,22 @@ class MeshCoreTCPMux
       else
         # Broadcast ADVERT (0x80), PATH_UPDATED (0x81), RAW_DATA (0x84), LOG_RX_DATA (0x88),
         # NEW_ADVERT (0x8a), CONTROL_DATA (0x8e), CONTACT_DELETED (0x8f), and CONTACTS_FULL (0x90).
-        unless {0x80_u8, 0x81_u8, 0x84_u8, 0x88_u8, 0x8a_u8, 0x8e_u8, 0x8f_u8, 0x90_u8}.includes?(payload[0])
+        known = {0x80_u8, 0x81_u8, 0x84_u8, 0x88_u8, 0x8a_u8, 0x8e_u8, 0x8f_u8, 0x90_u8}.includes?(payload[0])
+        unless known
           @counters[:unknown_pushes] += 1
           if !@last_unknown_log || now - @last_unknown_log.not_nil! >= 1.second
             @last_unknown_log = now
-            @actions << Diagnostic.new("epoch=#{@epoch} unknown_push code=#{payload[0]} count=#{@counters[:unknown_pushes]}")
+            @actions << Diagnostic.new("event=push.received epoch=#{@epoch} route=broadcast unknown_push " \
+                                       "code=#{payload[0]} sessions=#{@sessions.size} " \
+                                       "count=#{@counters[:unknown_pushes]}", :warn)
           end
         end
-        @actions << Diagnostic.new("event=push.received epoch=#{@epoch} route=broadcast sessions=#{@sessions.size} " \
-                                   "#{Protocol.describe_response(payload)}")
-        @actions << Diagnostic.new("event=push.payload epoch=#{@epoch} " \
-                                   "#{Protocol.describe_response(payload, include_payload: true)}", :debug)
+        if known
+          @actions << Diagnostic.new("event=push.received epoch=#{@epoch} route=broadcast sessions=#{@sessions.size} " \
+                                     "#{Protocol.describe_response(payload)}")
+          @actions << Diagnostic.new("event=push.payload epoch=#{@epoch} " \
+                                     "#{Protocol.describe_response(payload, include_payload: true)}", :debug)
+        end
         @sessions.keys.each { |id| emit(id, payload) }
       end
     end
