@@ -29,7 +29,7 @@ class MeshCoreTCPMux
         options.on("--listen-dedicated-client-port PORT", "Dedicated-client listener port (repeatable)") do |value|
           config.listen_dedicated_client_ports << value.to_i
         end
-        options.on("--offline-queue-size COUNT", "Per-dedicated-client offline queue entries (default 128)") do |value|
+        options.on("--offline-queue-size COUNT", "Per-dedicated-client offline queue entries (default 256)") do |value|
           config.offline_queue_size = value.to_i
         end
         options.on("--response-timeout SECONDS", "Upstream response / contacts idle deadline (5)") { |v| config.response_timeout = v.to_f.seconds }

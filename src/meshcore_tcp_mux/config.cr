@@ -12,7 +12,7 @@ class MeshCoreTCPMux
     property listen_host = "127.0.0.1"
     property listen_multi_client_port = 5001
     property listen_dedicated_client_ports = Array(Int32).new
-    property offline_queue_size = 128
+    property offline_queue_size = 256
     property command_limit = 16
     property command_age = 15.seconds
     # A virtual sync waits for a qualifying physical inbox pop behind other

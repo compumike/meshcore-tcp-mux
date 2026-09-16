@@ -9,7 +9,7 @@ describe MeshCoreTCPMux::Config do
     config.validate!
     config.listen_multi_client_port.should eq(5001)
     config.listen_dedicated_client_ports.should be_empty
-    config.offline_queue_size.should eq(128)
+    config.offline_queue_size.should eq(256)
     config.command_age.should eq(15.seconds)
     config.virtual_sync_timeout.should eq(15.seconds)
   end

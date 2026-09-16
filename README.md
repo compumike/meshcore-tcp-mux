@@ -108,7 +108,7 @@ Existing command lines must replace the removed `--listen-port` option with
 `--listen-multi-client-port`. There is no implicit dedicated-client listener in
 the binary defaults; port 5002 is enabled explicitly by the Compose example.
 
-Dedicated queues default to 128 entries and can be changed with
+Dedicated queues default to 256 entries and can be changed with
 `--offline-queue-size N`. When full, they mirror companion firmware priority:
 the oldest channel message is sacrificed for a new arrival; if the queue has no
 channel message, the new arrival is discarded. A disconnected or abandoned
