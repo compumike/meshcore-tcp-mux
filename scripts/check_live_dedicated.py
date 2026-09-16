@@ -216,10 +216,24 @@ async def receive_sequence(
     expected_type: EventType,
     timeout: float,
     max_unmatched: int,
+    verify_empty_after: bool = False,
 ) -> None:
-    """Pull exact markers in order while bounding consumption of other traffic."""
+    """Pull exact markers in order and optionally prove the next inbox item is empty."""
     deadline = asyncio.get_running_loop().time() + timeout
     unmatched = 0
+
+    def record_unmatched(event: Any, reason: str) -> None:
+        """Record only safe correlation metadata for an unexpected message."""
+        details: dict[str, Any] = {
+            "endpoint": label,
+            "kind": event.type.value,
+            "reason": reason,
+        }
+        text = event.payload.get("text")
+        if isinstance(text, str):
+            details["content_sha256"] = marker_digest(text)
+        emit("message_unmatched", **details)
+
     for expected in markers:
         while asyncio.get_running_loop().time() < deadline:
             remaining = deadline - asyncio.get_running_loop().time()
@@ -249,6 +263,7 @@ async def receive_sequence(
                     unmatched_before_marker=unmatched,
                 )
                 break
+            record_unmatched(event, "before_expected_marker")
             unmatched += 1
             if unmatched > max_unmatched:
                 raise AssertionError(
@@ -257,6 +272,21 @@ async def receive_sequence(
         else:
             raise AssertionError(
                 f"{label}: timed out waiting for marker {marker_digest(expected)}"
+            )
+
+    if verify_empty_after:
+        try:
+            trailing = await client.commands.get_msg(timeout=min(4, timeout))
+        except asyncio.TimeoutError as exc:
+            raise AssertionError(
+                f"{label}: timed out verifying inbox empty after test sequence"
+            ) from exc
+        if trailing is None or trailing.type != EventType.NO_MORE_MSGS:
+            if trailing is not None and trailing.type in INBOX_TYPES:
+                record_unmatched(trailing, "after_expected_sequence")
+            actual = None if trailing is None else trailing.type.value
+            raise AssertionError(
+                f"{label}: expected empty inbox after test sequence, got {actual!r}"
             )
 
 
@@ -396,6 +426,7 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
                 EventType.CONTACT_MSG_RECV,
                 args.receive_timeout,
                 args.max_unmatched,
+                verify_empty_after=args.max_unmatched == 0,
             )
             await ack.require_token(token, ack_labels, ack_timeout)
             emit("ack_fanout_verified", sender=label, clients=len(ack_labels))
@@ -413,6 +444,7 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
             EventType.CONTACT_MSG_RECV,
             args.receive_timeout,
             args.max_unmatched,
+            verify_empty_after=args.max_unmatched == 0,
         )
         await ack.require_token(peer_token, ["peer"], peer_ack_timeout)
         for index, client in enumerate(dedicated, 1):
@@ -423,6 +455,7 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
                 EventType.CONTACT_MSG_RECV,
                 args.receive_timeout,
                 args.max_unmatched,
+                verify_empty_after=args.max_unmatched == 0,
             )
         emit("live_fanout_verified", recipients=1 + len(dedicated))
 
@@ -443,6 +476,7 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
                 EventType.CONTACT_MSG_RECV,
                 args.receive_timeout,
                 args.max_unmatched,
+                verify_empty_after=args.max_unmatched == 0,
             )
             await ack.require_token(peer_token, ["peer"], peer_ack_timeout)
 
@@ -458,6 +492,7 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
                 EventType.CONTACT_MSG_RECV,
                 args.receive_timeout,
                 args.max_unmatched,
+                verify_empty_after=args.max_unmatched == 0,
             )
         emit(
             "detached_backfill_verified",
@@ -480,6 +515,7 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
             EventType.CONTACT_MSG_RECV,
             args.receive_timeout,
             args.max_unmatched,
+            verify_empty_after=args.max_unmatched == 0,
         )
         await ack.require_token(peer_token, ["peer"], peer_ack_timeout)
         takeover_a = await open_client(
@@ -504,6 +540,7 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
             EventType.CONTACT_MSG_RECV,
             args.receive_timeout,
             args.max_unmatched,
+            verify_empty_after=args.max_unmatched == 0,
         )
         # Other dedicated ports receive the same arrival and remain usable.
         for index, client in enumerate(dedicated[1:], 2):
@@ -514,6 +551,7 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
                 EventType.CONTACT_MSG_RECV,
                 args.receive_timeout,
                 args.max_unmatched,
+                verify_empty_after=args.max_unmatched == 0,
             )
         dedicated[0] = takeover_b
         emit("dedicated_takeover_verified", port_index=1)
@@ -538,6 +576,7 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
                 EventType.CHANNEL_MSG_RECV,
                 args.receive_timeout,
                 args.max_unmatched,
+                verify_empty_after=args.max_unmatched == 0,
             )
             for index, client in enumerate(dedicated, 1):
                 await receive_sequence(
@@ -547,6 +586,7 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
                     EventType.CHANNEL_MSG_RECV,
                     args.receive_timeout,
                     args.max_unmatched,
+                    verify_empty_after=args.max_unmatched == 0,
                 )
             emit("channel_fanout_verified", recipients=1 + len(dedicated))
 
