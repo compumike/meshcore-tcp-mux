@@ -236,3 +236,36 @@ one of each with no retries. `check_live_reconnect.py` takes exclusive ownership
 of the physical upstream through a temporary local relay, drops that TCP
 connection once, and verifies session closure and fresh initialization. Stop
 every other upstream producer before running that check.
+
+`check_live_dedicated.py` is a bounded real-radio check for one multi-client
+listener, one or more dedicated-client listeners, and a separate hardware test
+companion. It fences both destinations by exact name and full live public key.
+Without `--execute` it performs only identity, contact, and concurrent-query
+checks. With `--execute` it sends attempt-zero DMs without retries, verifies ACK
+fan-out, disconnects and reconnects both dedicated clients, checks FIFO
+backfill, replaces one dedicated connection, and optionally sends one message
+to an explicitly selected private channel. It prints marker hashes rather than
+message bodies and stops after a configurable radio-send budget.
+
+Use deployment-specific values rather than adding real addresses or contact
+names to the repository:
+
+```sh
+direnv exec . .venv/bin/python scripts/check_live_dedicated.py \
+  --mux-host "$MUX_HOST" \
+  --multi-port "$MESHCORE_MULTI_CLIENT_PORT" \
+  --dedicated-port "$MESHCORE_DEDICATED_CLIENT_PORT_1" \
+  --dedicated-port "$MESHCORE_DEDICATED_CLIENT_PORT_2" \
+  --peer-host "$MESHCORE_TEST_PEER_HOST" \
+  --peer-port "$MESHCORE_TEST_PEER_PORT" \
+  --mux-contact "$MESHCORE_MUX_CONTACT" \
+  --peer-contact "$MESHCORE_TEST_PEER_CONTACT" \
+  --channel "$MESHCORE_PRIVATE_TEST_CHANNEL"
+```
+
+Review the read-only preflight first, then repeat the same command with
+`--execute`. Inbox synchronization is destructive, and an unexpected queued
+message is consumed before the harness can identify it as unrelated. Reserve
+both companions for the run and use `--max-unmatched 0` when a completely clean
+test inbox is required. Channel overflow remains fake-companion-only because
+exercising it on RF would add unnecessary shared-channel traffic.
