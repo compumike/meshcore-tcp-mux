@@ -4,8 +4,11 @@ import contextlib
 import io
 import unittest
 
+from meshcore import EventType
+
 from check_live_dedicated import (
     SendBudget,
+    inbox_text_matches,
     make_marker,
     marker_digest,
     parse_args,
@@ -50,6 +53,46 @@ class LiveDedicatedHarnessTests(unittest.TestCase):
         digest = marker_digest(marker)
         self.assertEqual(len(digest), 64)
         self.assertNotIn(marker, digest)
+
+    def test_channel_matcher_accounts_for_firmware_sender_prefix(self):
+        marker = "mux-live synthetic 01 channel-fanout"
+        self.assertTrue(
+            inbox_text_matches(
+                EventType.CHANNEL_MSG_RECV,
+                f"Synthetic Node: {marker}",
+                marker,
+            )
+        )
+        self.assertTrue(
+            inbox_text_matches(
+                EventType.CHANNEL_MSG_RECV,
+                f"Node: With Colon: {marker}",
+                marker,
+            )
+        )
+        self.assertFalse(
+            inbox_text_matches(EventType.CHANNEL_MSG_RECV, marker, marker)
+        )
+        self.assertFalse(
+            inbox_text_matches(
+                EventType.CHANNEL_MSG_RECV,
+                f"Synthetic Node: {marker} trailing",
+                marker,
+            )
+        )
+
+    def test_direct_matcher_still_requires_the_exact_body(self):
+        marker = "mux-live synthetic 01 direct"
+        self.assertTrue(
+            inbox_text_matches(EventType.CONTACT_MSG_RECV, marker, marker)
+        )
+        self.assertFalse(
+            inbox_text_matches(
+                EventType.CONTACT_MSG_RECV,
+                f"Synthetic Node: {marker}",
+                marker,
+            )
+        )
 
     def test_parser_accepts_one_dedicated_port_and_rejects_duplicates(self):
         common = [

@@ -250,7 +250,10 @@ checks. With `--execute` it sends attempt-zero DMs without retries, verifies ACK
 fan-out, disconnects and reconnects both dedicated clients, checks FIFO
 backfill, replaces one dedicated connection, and optionally sends one message
 to an explicitly selected private channel. It prints marker hashes rather than
-message bodies and stops after a configurable radio-send budget.
+message bodies and stops after a configurable radio-send budget. For channel
+traffic, the harness accounts for the companion firmware's on-air
+`<unverified sender name>: <application body>` wrapper while still requiring
+the synthetic application body to match exactly.
 
 Use deployment-specific values rather than adding real addresses or contact
 names to the repository:

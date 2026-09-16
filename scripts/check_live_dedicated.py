@@ -38,6 +38,21 @@ def marker_digest(marker: str) -> str:
     return hashlib.sha256(marker.encode()).hexdigest()
 
 
+def inbox_text_matches(
+    event_type: EventType, received: str, expected_body: str
+) -> bool:
+    """Match the application body without mistaking channel sender text for it."""
+    if event_type == EventType.CHANNEL_MSG_RECV:
+        # Companion firmware constructs group text as
+        # ``<unverified sender name>: <application body>``.  meshcore_py
+        # exposes that complete plaintext in ``payload["text"]``; applications
+        # commonly render the prefix separately.  Require a nonempty prefix
+        # and an exact suffix so a marker elsewhere in the message cannot pass.
+        suffix = f": {expected_body}"
+        return len(received) > len(suffix) and received.endswith(suffix)
+    return received == expected_body
+
+
 def resolve_contact(
     contacts: dict[str, dict[str, Any]],
     expected_name: str,
@@ -223,7 +238,9 @@ async def receive_sequence(
                     f"{label}: unexpected inbox event {event.type.value}"
                 )
             text = event.payload.get("text")
-            if event.type == expected_type and text == expected:
+            if event.type == expected_type and inbox_text_matches(
+                event.type, text, expected
+            ):
                 emit(
                     "message_received",
                     endpoint=label,
