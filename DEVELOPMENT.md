@@ -229,6 +229,12 @@ docker buildx imagetools create \
   compumike/meshcore-tcp-mux:1.0.0
 ```
 
+One-line build/smoke/push:
+
+```sh
+direnv exec . make docker-build && direnv exec . make docker-smoke PYTHON="$PWD/.venv/bin/python" && direnv exec . make docker-push DOCKER_BUILDER=meshcore-multiarch
+```
+
 Do not move an already published version tag to different source or image
 contents. Use a new version for corrections; deployments can pin the version
 tag or the inspected digest for reproducibility. These commands publish source

@@ -51,4 +51,17 @@ clean:
 	# Explicitly write out the .crystal-cache directory name so that any assignment errors don't cause a too-broad rm call.
 	rm -rf .crystal-cache
 
-.PHONY: all spec format-check smoke ci docker-build docker-smoke docker-push clean
+loc:
+	@count_lines() { \
+		find "$$1" -type f -name "$$2" \
+			-exec awk '!/^[[:space:]]*$$/ && !/^[[:space:]]*#/ { count++ } END { print count + 0 }' {} + | \
+			awk '{ total += $$1 } END { print total + 0 }'; \
+	}; \
+	src_lines=$$(count_lines src '*.cr'); \
+	spec_lines=$$(count_lines spec '*.cr'); \
+	script_lines=$$(count_lines scripts '*.py'); \
+	printf 'src (*.cr): %d\nspec (*.cr): %d\nscripts (*.py): %d\ntotal: %d\n' \
+		"$$src_lines" "$$spec_lines" "$$script_lines" \
+		"$$((src_lines + spec_lines + script_lines))"
+
+.PHONY: all spec format-check smoke ci docker-build docker-smoke docker-push clean loc
