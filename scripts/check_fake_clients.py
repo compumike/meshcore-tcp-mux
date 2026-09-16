@@ -369,13 +369,17 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
         baseline_pops = fake.commands[10]
         duplicate = contact_message("duplicate")
         await fake.enqueue(duplicate, duplicate, channel_message("channel"))
+        # The mux deliberately leaves custody on the companion until a client
+        # syncs. Start both consumers before waiting for the physical drain.
+        legacy_drain = asyncio.create_task(drain_three(legacy, "legacy"))
+        modern_drain = asyncio.create_task(drain_three(modern, "modern"))
         await wait_until(
             lambda: not fake.offline and fake.commands[10] >= baseline_pops + 3,
             4,
             "mux inbox pump",
         )
         legacy_events, modern_events = await asyncio.gather(
-            drain_three(legacy, "legacy"), drain_three(modern, "modern")
+            legacy_drain, modern_drain
         )
         for label, events in (("legacy", legacy_events), ("modern", modern_events)):
             if [event.payload["text"] for event in events] != [
@@ -395,6 +399,7 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
         clients.remove(legacy)
         old_item = contact_message("before-reconnect", 3456)
         await fake.enqueue(old_item)
+        retained_task = asyncio.create_task(modern.commands.get_msg(timeout=4))
         await wait_until(lambda: not fake.offline, 4, "pre-reconnect fanout")
         replacement = await connect(listen_port, "replacement")
         clients.append(replacement)
@@ -406,7 +411,7 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
         empty = await replacement.commands.get_msg(timeout=4)
         require_event(empty, EventType.NO_MORE_MSGS, "replacement historical inbox")
         retained = require_event(
-            await modern.commands.get_msg(timeout=4),
+            await retained_task,
             EventType.CONTACT_MSG_RECV,
             "modern retained inbox",
         )
@@ -414,10 +419,12 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
             raise AssertionError("wrong retained pre-reconnect item")
 
         await fake.enqueue(channel_message("after-reconnect", 4567))
-        await wait_until(lambda: not fake.offline, 4, "post-reconnect fanout")
-        post = await asyncio.gather(
-            modern.commands.get_msg(timeout=4), replacement.commands.get_msg(timeout=4)
+        modern_post = asyncio.create_task(modern.commands.get_msg(timeout=4))
+        replacement_post = asyncio.create_task(
+            replacement.commands.get_msg(timeout=4)
         )
+        await wait_until(lambda: not fake.offline, 4, "post-reconnect fanout")
+        post = await asyncio.gather(modern_post, replacement_post)
         for event in post:
             require_event(event, EventType.CHANNEL_MSG_RECV, "post-reconnect channel")
             if event.payload["text"] != "after-reconnect":

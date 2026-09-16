@@ -63,12 +63,23 @@ async def run(image):
         for event in clocks:
             require_event(event, EventType.CURRENT_TIME, "container clock query")
         await fake.enqueue(contact_message("docker-dm"), channel_message("docker-channel"))
+        # An explicit downstream sync starts the drain; admission and
+        # MSG_WAITING alone intentionally leave custody on the companion.
+        first_events = [
+            asyncio.create_task(c.commands.get_msg(timeout=4)) for c in clients
+        ]
         await wait_until(lambda: not fake.offline, 4, "container inbox fanout")
-        for kind, body in (
+        expected = (
             (EventType.CONTACT_MSG_RECV, "docker-dm"),
             (EventType.CHANNEL_MSG_RECV, "docker-channel"),
-        ):
-            events = await asyncio.gather(*(c.commands.get_msg(timeout=4) for c in clients))
+        )
+        for index, (kind, body) in enumerate(expected):
+            if index == 0:
+                events = await asyncio.gather(*first_events)
+            else:
+                events = await asyncio.gather(
+                    *(c.commands.get_msg(timeout=4) for c in clients)
+                )
             for event in events:
                 require_event(event, kind, "container inbox")
                 assert event.payload["text"] == body, "container changed message body"

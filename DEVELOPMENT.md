@@ -34,6 +34,29 @@ Python environment):
 direnv exec . make ci PYTHON=/path/to/python
 ```
 
+To create a project-local Python environment with asdf, install the asdf Python
+plugin once if it is not already available, install and select Python 3.12.11,
+then create a virtual environment and install the pinned test clients:
+
+```sh
+asdf plugin add python
+asdf install python 3.12.11
+asdf set python 3.12.11
+
+direnv exec . python -m venv .venv
+direnv exec . .venv/bin/python -m pip install --upgrade pip
+direnv exec . .venv/bin/python -m pip install \
+  'meshcore==2.3.9.1' \
+  'meshcore-cli==1.6.3'
+```
+
+There is no need to activate the virtual environment. Pass its interpreter to
+Make explicitly so the smoke tests use the packages installed above:
+
+```sh
+direnv exec . make ci PYTHON="$PWD/.venv/bin/python"
+```
+
 The local `make ci` target checks formatting, builds, runs specs, and exercises
 the fake companion with the pinned client packages. The example systemd unit in
 `examples/` assumes the binary has been installed at
