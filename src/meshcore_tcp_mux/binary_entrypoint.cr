@@ -32,7 +32,7 @@ class MeshCoreTCPMux
         options.on("--offline-queue-size COUNT", "Per-dedicated-client offline queue entries (default 256)") do |value|
           config.offline_queue_size = value.to_i
         end
-        options.on("--response-timeout SECONDS", "Upstream response / contacts idle deadline (5)") { |v| config.response_timeout = v.to_f.seconds }
+        options.on("--response-timeout SECONDS", "Upstream response / contacts idle deadline (20)") { |v| config.response_timeout = v.to_f.seconds }
         options.on("--contacts-timeout SECONDS", "Total contacts transaction deadline (30)") { |v| config.contacts_timeout = v.to_f.seconds }
         options.on("--poll-interval SECONDS", "Inbox fallback polling interval (5)") { |v| config.poll_interval = v.to_f.seconds }
         self.class.register_policy_options(options, config)

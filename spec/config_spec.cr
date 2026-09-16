@@ -11,7 +11,8 @@ describe MeshCoreTCPMux::Config do
     config.listen_dedicated_client_ports.should be_empty
     config.offline_queue_size.should eq(256)
     config.command_age.should eq(15.seconds)
-    config.virtual_sync_timeout.should eq(15.seconds)
+    config.virtual_sync_timeout.should eq(30.seconds)
+    config.response_timeout.should eq(20.seconds)
     config.radio_uncertainty_timeout.should eq(60.seconds)
     config.private_key_export.should be_true
     config.private_key_import.should be_true

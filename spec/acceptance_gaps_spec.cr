@@ -465,10 +465,10 @@ describe "remaining design acceptance invariants" do
       # CONTACT (3): full 148-byte native record with synthetic zero fields.
       h.response(Bytes.new(148, 0_u8).tap { |p| p[0] = 3_u8 })
     end
-    h.now = 15.seconds
+    h.now = 30.seconds
     h.broker.tick(h.now)
     h.flush
-    # ERR (0x01), BAD_STATE: only the fifteen-second virtual sync has expired.
+    # ERR (0x01), BAD_STATE: only the 30-second virtual sync has expired.
     h.downstream[2_i64].should contain(Bytes[1_u8, 4_u8])
     h.broker.failed.should be_false
     h.broker.active.should_not be_nil

@@ -47,6 +47,7 @@ class MeshCoreTCPMux
     getter epoch : Int64
     getter sessions = Hash(Int64, Session).new
     getter active : Transaction? = nil
+    getter response_debt : Transaction? = nil
     getter actions = Array(Action).new
     getter failed = false
     getter orphan : Bytes? = nil
@@ -203,6 +204,62 @@ class MeshCoreTCPMux
       fail_epoch(ex.message || "invalid upstream response")
     end
 
+    def drain_uncertain_frame(payload : Bytes, now : Time::Span) : Bool
+      # After a response timeout, keep the old TCP generation alive until its
+      # outstanding ordinary response terminates. Some asynchronous companion
+      # implementations let a command handler survive client replacement and
+      # write through a global queue owned by the replacement connection. This
+      # poisoned drain prevents that reply from acquiring a new epoch owner.
+      # Pushes remain useful for shared radio bookkeeping while no downstream
+      # session is admitted. The return value says the response debt is clear.
+      transaction = @response_debt || return true
+      Protocol.validate_response_shape!(payload)
+      if payload[0] >= Protocol::PUSH_ADVERT
+        push(payload, now)
+        return false
+      end
+
+      if transaction.step.setup? || transaction.step.restore?
+        unless payload == Bytes[Protocol::RESP_OK] ||
+               (payload.size == 2 && payload[0] == Protocol::RESP_ERR)
+          raise Protocol::ProtocolError.new("unexpected poisoned scope response")
+        end
+        log_response(transaction, payload, now)
+        @response_debt = nil
+        return true
+      end
+
+      disposition = Protocol.validate_response!(
+        transaction.descriptor,
+        payload,
+        transaction.command,
+        phase: transaction.contacts_started ? 1 : 0
+      )
+      transaction.response_frames += 1
+      log_response(transaction, payload, now)
+
+      if transaction.descriptor.grammar.contacts? && payload[0] != Protocol::RESP_ERR
+        if payload[0] == Protocol::RESP_CONTACTS_START
+          raise Protocol::ProtocolError.new("duplicate contacts start in poisoned drain") if transaction.contacts_started
+          transaction.contacts_started = true
+        elsif payload[0] != Protocol::RESP_END_OF_CONTACTS
+          raise Protocol::ProtocolError.new("contacts record before start in poisoned drain") unless transaction.contacts_started
+        end
+      end
+
+      if disposition.complete?
+        # A hidden physical inbox pop is destructive. Preserve its result for
+        # dedicated queues and, when a multi-client initiated it, as the orphan
+        # delivered to the next same-identity multi-client session.
+        if transaction.owner == 0 && payload[0] != Protocol::RESP_ERR
+          pop_result(transaction, payload)
+        end
+        @response_debt = nil
+        return true
+      end
+      false
+    end
+
     def tick(now : Time::Span) : Nil
       # Expire client waits and radio reservations. Polling only reminds attached
       # clients to sync; it never authorizes a destructive physical inbox pop.
@@ -323,6 +380,10 @@ class MeshCoreTCPMux
         return true if transaction.upstream_write_id
         if now - transaction.progress >= @config.response_timeout ||
            (transaction.descriptor.grammar.contacts? && now - transaction.started >= @config.contacts_timeout)
+          # Retain the exact response grammar before fail_epoch clears normal
+          # ownership. Runtime can then poison-drain this still-open connection
+          # instead of reconnecting beneath an asynchronous command handler.
+          @response_debt = transaction
           fail_epoch("uncertain response timeout command=#{transaction.descriptor.name} " \
                      "opcode=#{transaction.command[0]} owner=#{transaction.owner} " \
                      "step=#{transaction.step.to_s.underscore} " \

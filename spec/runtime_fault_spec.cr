@@ -282,6 +282,10 @@ describe MeshCoreTCPMux::Runtime, "fault and epoch boundaries" do
 
     expect_closed(a)
     expect_closed(b)
+    # CURRENT_TIME (0x09) arrives after the deadline on the original socket.
+    # Runtime drains this response debt before reconnecting, so it cannot be
+    # mistaken for an epoch-2 command's response.
+    companion.push(Bytes[9_u8, 1_u8, 2_u8, 3_u8, 4_u8])
     await_epoch_ready(companion, 2)
     select
     when command = companion.commands.receive
@@ -318,6 +322,13 @@ describe MeshCoreTCPMux::Runtime, "fault and epoch boundaries" do
         companion.drop
       end
       expect_closed(sender)
+
+      if fault == :timeout
+        # SENT: non-flood acceptance, synthetic u32 tag, synthetic u32 timeout.
+        # Its late arrival clears the poisoned old epoch without replaying the
+        # original DM or allowing this response to cross the reconnect.
+        companion.push(Bytes[6_u8, 0_u8, 1_u8, 2_u8, 3_u8, 4_u8, 0xe8_u8, 3_u8, 0_u8, 0_u8])
+      end
 
       await_epoch_ready(companion, 2)
       select

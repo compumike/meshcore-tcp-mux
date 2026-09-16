@@ -17,12 +17,17 @@ class MeshCoreTCPMux
     property command_age = 15.seconds
     # A virtual sync waits for a qualifying physical inbox pop behind other
     # clients' transactions. Expiry rejects only this wait, without ending the epoch.
-    property virtual_sync_timeout = 15.seconds
+    property virtual_sync_timeout = 30.seconds
     property inbox_entries = 256
     property output_frames = 512
     property frame_timeout = 5.seconds
     property write_timeout = 5.seconds
-    property response_timeout = 5.seconds
+    # openHop companions await radio injection and persistence work before
+    # producing otherwise ordinary replies. Their reference client uses a
+    # 15-second command horizon, so five seconds is not a portable companion
+    # response bound even when the TCP reader remains healthy. Keep additional
+    # headroom for radio-link arbitration and persistence contention.
+    property response_timeout = 20.seconds
     property contacts_timeout = 30.seconds
     property startup_timeout = 15.seconds
     property signing_timeout = 30.seconds

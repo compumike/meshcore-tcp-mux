@@ -97,6 +97,104 @@ describe "broker event-order regressions" do
     broker.failed.should be_false
   end
 
+  it "allows openHop-style command and inbox completions beyond five seconds by default" do
+    broker = review_ready_broker
+    broker.client_frame(1_i64, Bytes[BrokerReviewProtocol::CMD_GET_DEVICE_TIME], Time::Span.zero)
+    query = review_sends(broker.take_actions, 0_i64).first
+    broker.written(0_i64, query.epoch, query.write_id, Time::Span.zero)
+
+    # CURRENT_TIME arrives after the former five-second default while the TCP
+    # connection is healthy. The new 20-second default must retain ownership.
+    broker.tick(10.seconds)
+    broker.failed.should be_false
+    current_time = Bytes[BrokerReviewProtocol::RESP_CURRENT_TIME, 1_u8, 2_u8, 3_u8, 4_u8]
+    broker.upstream_frame(current_time, 10.seconds)
+    replies = review_sends(broker.take_actions, 1_i64).map(&.payload)
+    replies.select { |payload| payload[0] == BrokerReviewProtocol::RESP_CURRENT_TIME }.should eq([current_time])
+
+    # A hidden physical inbox pop has the same response horizon. Its owner-zero
+    # transaction must also remain valid beyond five seconds.
+    broker.client_frame(1_i64, Bytes[BrokerReviewProtocol::CMD_SYNC_NEXT_MESSAGE], 11.seconds)
+    pop = review_sends(broker.take_actions, 0_i64).first
+    broker.written(0_i64, pop.epoch, pop.write_id, 11.seconds)
+    broker.tick(21.seconds)
+    broker.failed.should be_false
+    broker.upstream_frame(Bytes[BrokerReviewProtocol::RESP_NO_MORE_MESSAGES], 21.seconds)
+    broker.failed.should be_false
+  end
+
+  it "preserves a destructively popped inbox item while draining response debt" do
+    config = MeshCoreTCPMux::Config.new
+    config.response_timeout = 5.seconds
+    broker = review_ready_broker(config)
+    broker.client_frame(1_i64, Bytes[BrokerReviewProtocol::CMD_SYNC_NEXT_MESSAGE], Time::Span.zero)
+    pop = review_sends(broker.take_actions, 0_i64).first
+    broker.written(0_i64, pop.epoch, pop.write_id, Time::Span.zero)
+
+    broker.tick(5.seconds)
+    broker.failed.should be_true
+    broker.response_debt.should_not be_nil
+    broker.take_actions
+
+    # Legacy CHANNEL_MSG_RECV: opcode, channel index, path length, four-byte
+    # timestamp, then text. The old session is gone, so the late destructive
+    # pop becomes a same-identity orphan for the next multi-client session.
+    message = Bytes[
+      BrokerReviewProtocol::RESP_CHANNEL_MESSAGE,
+      1_u8,
+      0_u8,
+      1_u8, 2_u8, 3_u8, 4_u8,
+      'x'.ord.to_u8,
+    ]
+    broker.drain_uncertain_frame(message, 6.seconds).should be_true
+    broker.response_debt.should be_nil
+    broker.orphan.should eq(message)
+  end
+
+  it "keeps a scoped send alive when each hidden substep exceeds five seconds" do
+    broker = review_ready_broker
+    broker.client_frame(
+      1_i64,
+      Bytes[BrokerReviewProtocol::CMD_SET_FLOOD_SCOPE_KEY, 1_u8],
+      Time::Span.zero
+    )
+    scope_actions = broker.take_actions
+    review_sends(scope_actions, 1_i64).each do |send|
+      broker.written(1_i64, send.epoch, send.write_id, Time::Span.zero)
+    end
+    channel_send = Bytes[
+      BrokerReviewProtocol::CMD_SEND_CHANNEL_TXT_MSG,
+      0_u8, 0_u8,
+      0_u8, 0_u8, 0_u8, 0_u8,
+    ]
+    broker.client_frame(1_i64, channel_send, Time::Span.zero)
+    setup = review_sends(broker.take_actions, 0_i64).first
+    broker.written(0_i64, setup.epoch, setup.write_id, Time::Span.zero)
+
+    broker.tick(6.seconds)
+    broker.upstream_frame(Bytes[BrokerReviewProtocol::RESP_OK], 6.seconds)
+    setup_done_actions = broker.take_actions
+    review_sends(setup_done_actions, 1_i64).each do |send|
+      broker.written(1_i64, send.epoch, send.write_id, 6.seconds)
+    end
+    command = review_sends(setup_done_actions, 0_i64).first
+    command.payload.should eq(channel_send)
+    broker.written(0_i64, command.epoch, command.write_id, 6.seconds)
+
+    broker.tick(12.seconds)
+    broker.upstream_frame(Bytes[BrokerReviewProtocol::RESP_OK], 12.seconds)
+    restore_actions = broker.take_actions
+    client_replies = review_sends(restore_actions, 1_i64).map(&.payload)
+    client_replies.select { |payload| payload[0] == BrokerReviewProtocol::RESP_OK }.should eq([Bytes[BrokerReviewProtocol::RESP_OK]])
+    restore = review_sends(restore_actions, 0_i64).first
+    broker.written(0_i64, restore.epoch, restore.write_id, 12.seconds)
+
+    broker.tick(18.seconds)
+    broker.upstream_frame(Bytes[BrokerReviewProtocol::RESP_OK], 18.seconds)
+    broker.failed.should be_false
+    broker.active.should be_nil
+  end
+
   it "starts the contacts-wide deadline when its upstream write completes" do
     config = MeshCoreTCPMux::Config.new
     config.response_timeout = 5.seconds

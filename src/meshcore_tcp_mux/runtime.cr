@@ -106,6 +106,7 @@ class MeshCoreTCPMux
           ready_at = Clock.now
           LOGGER.info { "event=upstream.ready epoch=#{@next_epoch} remote=#{socket_address(socket.remote_address)} #{startup.identification}" }
           run_epoch(broker, endpoint, upstream_events)
+          drain_response_debt(broker, endpoint, upstream_events) if broker.response_debt && !@stop_requested
           @orphan = broker.orphan.try(&.dup)
           @orphan_key = @orphan ? self_key : nil
           backoff = 500.milliseconds if Clock.now - ready_at >= 30.seconds
@@ -340,6 +341,91 @@ class MeshCoreTCPMux
       unless @stop_requested
         broker.fail_epoch(ex.message || ex.class.name)
         apply_actions(broker, upstream)
+      end
+    end
+
+    private def drain_response_debt(
+      broker : Broker,
+      upstream : Transport::Endpoint,
+      upstream_events : Channel(Transport::Event),
+    ) : Nil
+      # A timed-out command may still be running inside an asynchronous
+      # companion. Keep its original TCP generation open and refuse downstream
+      # work until its response grammar terminates. Reconnecting first can let
+      # an old handler write an untagged reply into the replacement connection.
+      transaction = broker.response_debt.not_nil!
+      LOGGER.warn do
+        "event=upstream.response_debt_draining epoch=#{broker.epoch} " \
+        "command=#{transaction.descriptor.name} opcode=#{transaction.command[0]} " \
+        "owner=#{transaction.owner} step=#{transaction.step.to_s.underscore}"
+      end
+
+      while broker.response_debt && !@stop_requested
+        select
+        when event = upstream_events.receive
+          case event
+          when Transport::Frame
+            LOGGER.info { WireLog.upstream(broker.epoch, :rx, event.payload) }
+            completed = broker.drain_uncertain_frame(event.payload, Clock.now)
+            apply_actions(broker, upstream)
+            if completed
+              LOGGER.info { "event=upstream.response_debt_drained epoch=#{broker.epoch}" }
+            end
+          when Transport::Closed
+            wait_for_unresolved_response_debt(
+              broker.epoch,
+              "upstream closed while an old command could still complete: #{event.reason}"
+            )
+            return
+          when Transport::WriteFailed
+            wait_for_unresolved_response_debt(
+              broker.epoch,
+              "upstream writer failed while an old command could still complete: #{event.reason}"
+            )
+            return
+          when Transport::Written
+            # The command write was already proven complete before its response
+            # deadline began. Later writer notifications carry no ownership.
+          end
+        when accepted = @accepted.receive
+          socket = accepted.socket
+          LOGGER.info do
+            "event=client.refused remote=#{socket_address(socket.remote_address)} " \
+            "reason=upstream_response_debt epoch=#{broker.epoch}"
+          end
+          socket.close
+        when @stopping.receive?
+          return
+        end
+      end
+    rescue ex : Protocol::ProtocolError
+      wait_for_unresolved_response_debt(
+        broker.epoch,
+        "response debt received an invalid or mismatched ordinary frame: #{ex.message}"
+      )
+    end
+
+    private def wait_for_unresolved_response_debt(epoch : Int64, reason : String) : Nil
+      # Without a response on the old connection, an implementation whose
+      # command tasks outlive TCP replacement offers no finite safe reconnect
+      # point. Stay unavailable until an operator stops or resets the upstream
+      # rather than risk assigning its future reply to a new client's command.
+      LOGGER.error do
+        "event=upstream.response_debt_unresolved epoch=#{epoch} " \
+        "recovery=upstream_reset_required reason=#{reason.inspect}"
+      end
+      until @stop_requested
+        select
+        when accepted = @accepted.receive
+          socket = accepted.socket
+          LOGGER.info do
+            "event=client.refused remote=#{socket_address(socket.remote_address)} " \
+            "reason=unresolved_upstream_response epoch=#{epoch}"
+          end
+          socket.close
+        when @stopping.receive?
+          return
+        end
       end
     end
 
