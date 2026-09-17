@@ -13,7 +13,7 @@ direnv exec . out/meshcore-tcp-mux \
 
 Set `MESHCORE_UPSTREAM_HOST` to your companion's hostname or IP address before running the daemon.
 
-Logging uses Crystal's standard `Log` configuration. `LOG_LEVEL` defaults to `INFO`. Every wire frame includes its complete hexadecimal payload together with fields the mux can decode without decrypting it. Logs go to stderr so `--probe` keeps stdout machine-readable.
+Logging uses Crystal's standard `Log` configuration. `LOG_LEVEL` defaults to `INFO`. Running `LOG_LEVEL=DEBUG` may be helpful.
 
 ```sh
 LOG_LEVEL=DEBUG direnv exec . out/meshcore-tcp-mux \
@@ -57,23 +57,9 @@ meshcore-cli -t 127.0.0.1 -p 5001 list
 
 `--probe` performs startup synchronization and prints public firmware identification, then exits without starting a listener. Stop a running daemon before probing the physical upstream directly.
 
-## Sensitive-command policy
-
-The default policy preserves the operations available through a direct companion connection. Private-key export is returned only to its requester; private-key import and factory reset are admitted only through the exclusive disruptive-command lifecycle. To deny any of these commands at the mux, add its independent reject option:
-
-```sh
-out/meshcore-tcp-mux \
-  --upstream-host "$MESHCORE_UPSTREAM_HOST" --upstream-port 5000 \
-  --reject-private-key-export \
-  --reject-private-key-import \
-  --reject-factory-reset
-```
-
-Existing invocations containing `--allow-private-key-export` or `--maintenance` remain valid. Both switches are compatibility no-ops because they request the new default policy. A reject option remains effective regardless of where a legacy allow option appears on the command line.
-
 ## Docker
 
-The image name is `compumike/meshcore-tcp-mux:latest`. A published multi-platform tag contains both `linux/amd64` and `linux/arm64`; Docker selects the native variant automatically. ARM64 requires a 64-bit host OS (not 32-bit ARM).
+The image name is `compumike/meshcore-tcp-mux:latest` and is published here: [compumike/meshcore-tcp-mux](https://hub.docker.com/r/compumike/meshcore-tcp-mux). The published multi-platform tag contains both `linux/amd64` and `linux/arm64`; Docker selects the native variant automatically. ARM64 requires a 64-bit host OS (not 32-bit ARM).
 
 Set `MESHCORE_UPSTREAM_HOST` to your companion's hostname or IP address, then, after publishing or locally building the image:
 
@@ -95,9 +81,9 @@ docker run -d \
   --listen-dedicated-client-port 5002
 ```
 
-The **container** must listen on `0.0.0.0` for port forwarding to work. The **host** publication above remains local-only. For LAN clients, replace the host-side `127.0.0.1` with a trusted LAN interface address and configure your firewall. The protocol is unauthenticated; never publish it to the Internet. Normal bridge networking suffices; no privileged mode or host networking is required. The companion address must be reachable from inside the container; `127.0.0.1` there means the container itself, not the Docker host.
+The **container** must listen on `0.0.0.0` for port forwarding to work. The **host** publication above remains local-only (127.0.0.1) in this example. For LAN clients, replace the host-side `127.0.0.1` with a trusted LAN interface address (or `0.0.0.0`) and configure your firewall. The protocol is unauthenticated; never publish it to the Internet. Normal bridge networking suffices; no privileged mode or host networking is required. The companion address must be reachable from inside the container; `127.0.0.1` there means the container itself, not the Docker host.
 
-The image runs as non-root, needs no persistent volume, and logs to stderr:
+The image runs as non-root, needs no persistent volume, and logs to stdout:
 
 ```sh
 docker logs -f meshcore-tcp-mux
@@ -135,19 +121,19 @@ direnv exec . make docker-push DOCKER_BUILDER=YOUR_MULTIARCH_BUILDER
 docker buildx imagetools inspect compumike/meshcore-tcp-mux:dev
 ```
 
-`docker-push` builds and tests **both** platforms before pushing the shared `dev` tag. `docker-build` never pushes. `DOCKER_IMAGE`, `DOCKER_PLATFORMS`, and `DOCKER_BUILDER` are overridable Make variables. Version tags are selected explicitly as described below. For builder setup, see [Docker's multi-platform guide](https://docs.docker.com/build/building/multi-platform/). Native ARM64 builders are preferable for frequent releases because emulated Crystal compilation can be slow. When updating Crystal, update `.tool-versions` and the Dockerfile's compiler tag/index digest together.
+`docker-push` builds and tests **both** platforms before pushing the shared `dev` tag. `docker-build` never pushes and only builds the local architecture. `DOCKER_IMAGE`, `DOCKER_PLATFORMS`, and `DOCKER_BUILDER` are overridable Make variables. Version tags are selected explicitly as described below. For builder setup, see [Docker's multi-platform guide](https://docs.docker.com/build/building/multi-platform/). Native ARM64 builders are preferable for frequent releases because emulated Crystal compilation can be slow. When updating Crystal, update `.tool-versions` and the Dockerfile's compiler tag/index digest together.
 
 ### Versioned releases
 
-The examples here release version `1.0.0`. `meshcore-tcp-mux --version` prints the version without connecting to a companion or requiring upstream arguments.
+The example commands here release an example version `1.x.y`. Replace `1.x.y` with the actual version number as you use them. `meshcore-tcp-mux --version` prints the version without connecting to a companion or requiring upstream arguments.
 
 When preparing a new release, update `shard.yml` and `src/meshcore_tcp_mux/version.cr` together, run the local checks, and commit the reviewed release changes before creating the source tag.
 
 Tag and push the reviewed source commit to your configured Git remote:
 
 ```sh
-git tag -a v1.0.0 -m 'meshcore-tcp-mux 1.0.0'
-git push --atomic origin HEAD v1.0.0
+git tag -a v1.x.y -m 'meshcore-tcp-mux 1.x.y'
+git push --atomic origin HEAD v1.x.y
 ```
 
 Build, test, and publish the matching multi-platform image to the `dev` tag:
@@ -159,7 +145,7 @@ docker_build_smoke_push_dev
 After verifying the image, point `latest` and the versioned tag at the same multi-platform image without rebuilding it:
 
 ```sh
-docker buildx imagetools create --tag compumike/meshcore-tcp-mux:latest --tag compumike/meshcore-tcp-mux:v1.0.0 compumike/meshcore-tcp-mux:dev
+docker buildx imagetools create --tag compumike/meshcore-tcp-mux:latest --tag compumike/meshcore-tcp-mux:v1.x.y compumike/meshcore-tcp-mux:dev
 ```
 
 One-line build/smoke/push to `dev` tag:
@@ -201,3 +187,7 @@ direnv exec . .venv/bin/python scripts/check_live_dedicated.py \
 ```
 
 Review the read-only preflight first, then repeat the same command with `--execute`. Inbox synchronization is destructive, and an unexpected queued message is consumed before the harness can identify it as unrelated. Reserve both companions for the run and use `--max-unmatched 0` when a completely clean test inbox is required. Channel overflow remains fake-companion-only because exercising it on RF would add unnecessary shared-channel traffic.
+
+## Docker Compose
+
+The `docker compose` setup described in README.md is preferred versus than the one-off `docker` commands above.
