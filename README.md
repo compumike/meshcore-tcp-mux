@@ -81,10 +81,15 @@ The "ports" line controls what gets bound and is accessible from *outside* the c
 
 ```
 docker compose up -d
+
+# To watch the logs:
 docker compose logs --follow
 
 # Later, to turn it off:
 docker compose down
+
+# To upgrade:
+docker compose pull && docker compose down && docker compose up -d
 ```
 
 4. Connect to it:
