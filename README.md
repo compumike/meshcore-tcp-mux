@@ -142,7 +142,8 @@ See [LIMITATIONS.md](LIMITATIONS.md) for other minor protocol, persistence, shar
 
 - No other features are planned at this time.
 - This project has the goal of being deliberately small, stable, and low maintenance.
-- Serial and BLE support is not planned at this time.
+- Serial and BLE support is not planned.
+- Durable (disk-backed) dedicated-client inbox storage is not planned.
 
 ---
 

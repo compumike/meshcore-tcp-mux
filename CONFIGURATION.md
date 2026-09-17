@@ -21,35 +21,29 @@ The listener has no authentication or encryption. Do not expose it directly to t
 
 ```yaml
 command:
-  - --upstream-host
-  - 192.168.1.50
-  - --upstream-port
+  - "--upstream-host"
+  - "192.168.1.50"
+  - "--upstream-port"
   - "5000"
-  - --listen-host
-  - 0.0.0.0
-  - --listen-multi-client-port
+  - "--listen-host"
+  - "0.0.0.0"
+  - "--listen-multi-client-port"
   - "5001"
-  - --listen-dedicated-client-port
+  - "--listen-dedicated-client-port"
   - "5002"
-  - --listen-dedicated-client-port
+  - "--listen-dedicated-client-port"
   - "5003"
 ports:
-  - 127.0.0.1:5001:5001/tcp
-  - 127.0.0.1:5002:5002/tcp
-  - 127.0.0.1:5003:5003/tcp
+  - 127.0.0.1:5001-5003:5001-5003/tcp
 ```
 
-Only one socket uses a given dedicated port at a time; a new connection replaces the old one. Each internal listener port is the dedicated client's identity, even if Docker maps it to a different host-side port. The binary does not create a dedicated port unless one is explicitly configured.
-
-Use a dedicated port for an always-on integration or bot that should retain its logical inbox across TCP reconnects. Use the multi-client port for interactive and temporary clients.
-
-The old `--listen-port` option has been removed. Existing invocations must use `--listen-multi-client-port`.
+For dedicated ports: only one socket can use a given dedicated port at a time; a new connection replaces the old one (matching the MeshCore firmware TCP behavior). Each internal listener port number is the dedicated client's identity, even if Docker maps it to a different host-side port. The binary does not create a dedicated port unless one is explicitly configured with `--listen-dedicated-client-port`.
 
 ## Dedicated inbox queues
 
-Dedicated-client queues contain incoming messages only, are held in RAM, and are lost when the mux process stops. `--offline-queue-size N` sets the capacity of every dedicated queue and defaults to 256 entries.
+Dedicated-client queues contain incoming messages only, are held in RAM, and are lost when the `meshcore-tcp-mux` process stops. `--offline-queue-size N` sets the capacity of every dedicated queue and defaults to 256 entries.
 
-When a queue is full, the mux follows companion-firmware priority: it removes the oldest channel message to make room for a new arrival; if there is no channel message to remove, it discards the new arrival. A disconnected or abandoned dedicated client does not stall other clients. Large queues may make initial catch-up slow because native clients pull one item per synchronization request.
+When a queue is full, the mux follows companion-firmware priority: it removes the oldest channel message to make room for a new arrival; if there is no channel message to remove, it discards the new arrival. A disconnected or abandoned dedicated client does not stall other clients. Large queue sizes may make initial catch-up slow because native clients pull one item per synchronization request.
 
 Messages remain on the companion until at least one connected client requests inbox synchronization. Once draining begins, each result is copied to all configured dedicated queues, including disconnected ones, and to qualifying live multi-client sessions. This is not an application-receipt guarantee: an item leaves a dedicated queue when the mux accepts it for socket output, so a connection failure immediately afterward can still lose it.
 
@@ -57,11 +51,11 @@ Messages remain on the companion until at least one connected client requests in
 
 `--deduplicate-received-messages` discards retry copies of received text DMs and channel messages before they enter downstream queues. Its bounded in-memory history is shared across downstream clients and survives an upstream reconnect to the same companion identity. Discarded copies are logged at `DEBUG` level.
 
-This is disabled by default because MeshCore clients normally implement their own deduplication policy.
+This is disabled by default because the MeshCore firmware doesn't include the feature, but we recommend enabling it for most use cases.
 
 ## Sensitive-command policy
 
-By default, the mux matches a direct companion connection: private-key export, private-key import, and factory reset are available. Export responses are sent only to the requesting connection. Import and factory reset require one idle downstream session and end the current upstream epoch after the companion responds.
+By default, the mux matches a direct companion connection: private-key export, private-key import, and factory reset are available. Export responses are sent only to the requesting connection. Import and factory reset work only when there is a single downstream client.
 
 Deployments can reject the operations independently:
 
@@ -70,8 +64,6 @@ Deployments can reject the operations independently:
 --reject-private-key-import
 --reject-factory-reset
 ```
-
-The former `--allow-private-key-export` and `--maintenance` options are accepted as compatibility no-ops because those permissions are now the default.
 
 ## Timing and logging
 
@@ -83,7 +75,7 @@ Advanced timing options are normally best left at their defaults:
 --poll-interval SECONDS      Inbox fallback polling interval (5)
 ```
 
-Set the standard `LOG_LEVEL` environment variable to adjust diagnostics. At `INFO`, wire log entries identify the endpoint and direction and include the complete payload in hexadecimal. Treat logs as sensitive because protocol traffic can contain private data.
+Set the standard `LOG_LEVEL` environment variable to adjust diagnostics. At `LOG_LEVEL=debug`, wire log entries identify the endpoint and direction and include the complete payload in hexadecimal.
 
 ## Container operations
 
@@ -98,7 +90,5 @@ docker compose logs --follow
 docker compose down
 
 # Upgrade the image and recreate the service
-docker compose pull
-docker compose down
-docker compose up -d
+docker compose pull && docker compose down && docker compose up -d
 ```
