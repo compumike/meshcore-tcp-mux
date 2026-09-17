@@ -4,6 +4,7 @@ require "./broker"
 require "./config"
 require "./dedicated_client_slot"
 require "./frame_codec"
+require "./process_alarm_watchdog"
 require "./startup"
 require "./transport"
 require "./wire_log"
@@ -346,6 +347,10 @@ class MeshCoreTCPMux
         break if ended
         broker.tick(Clock.now)
         ended = apply_actions(broker, upstream)
+        # This is the sole recurring liveness proof: the coordinator accepted
+        # an event or timer, applied resulting effects, and advanced deadlines.
+        # A five-minute silence is intentionally fatal even while reconnecting.
+        ProcessAlarmWatchdog.touch!
       end
     rescue ex
       unless @stop_requested

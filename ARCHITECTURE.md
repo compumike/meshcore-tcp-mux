@@ -80,6 +80,10 @@ Resource conflicts return native `ERR(BAD_STATE)` in the client's FIFO order. Th
 
 The mux must be the companion's **only command producer across TCP, BLE, and USB**. Another producer can inject untagged responses and make ownership unknowable. The implementation guarantees companion-interface isolation; it does not guarantee exactly-once radio delivery, durable receipt, independent physical configuration, or coordination between applications that all choose to respond to the same message.
 
+## Process watchdog
+
+`ProcessAlarmWatchdog` is a process-wide, last-resort liveness guard for daemon mode. `BinaryEntrypoint` installs its `SIGALRM` handler and arms a five-minute countdown before starting `Runtime`; the diagnostic `--probe` path does not install it. `Runtime#run_epoch` is its sole recurring refresh point, after the coordinator has processed an event or timer, applied broker actions, and advanced broker deadlines. Its 100-millisecond timer therefore keeps an idle but connected epoch alive without downstream traffic. The watchdog is intentionally not refreshed during upstream connection, startup, reconnect backoff, or shutdown: failure to reach a running epoch for five minutes terminates the process with status 142 so its supervisor can replace it. It is never disabled during normal process teardown.
+
 ## Verification
 
 The specs exercise framing boundaries, scheduling and ownership, inbox fan-out, stateful leases, startup fencing, malformed traffic, timeouts, writer failures, maintenance policy, and protocol-aware logging. Support harnesses under [`spec/support/`](spec/support/) simulate the native companion and runtime TCP interactions; the design rationale and complete protocol inventory remain in [`design_docs/meshcore-tcp-multiplexer-design.md`](design_docs/meshcore-tcp-multiplexer-design.md).

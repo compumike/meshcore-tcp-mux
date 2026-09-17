@@ -1,5 +1,6 @@
 require "option_parser"
 require "log"
+require "./process_alarm_watchdog"
 require "./upstream"
 require "./runtime"
 require "./version"
@@ -49,6 +50,11 @@ class MeshCoreTCPMux
         if probe
           puts MeshCoreTCPMux::Upstream.probe(host.not_nil!, port.not_nil!, config)
         else
+          # The watchdog is deliberately process-scoped. Arm it before Runtime
+          # begins work; a daemon unable to connect upstream for five minutes is
+          # restarted rather than remaining indefinitely unavailable.
+          MeshCoreTCPMux::ProcessAlarmWatchdog.setup!
+          MeshCoreTCPMux::ProcessAlarmWatchdog.touch!
           runtime = MeshCoreTCPMux::Runtime.new(host.not_nil!, port.not_nil!, config)
           Signal::INT.trap { runtime.stop }
           Signal::TERM.trap { runtime.stop }
