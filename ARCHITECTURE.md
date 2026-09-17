@@ -1,5 +1,15 @@
 # Architecture
 
+## Development note
+
+This project is almost entirely "vibe coded", but has been tested extensively against physical companion nodes, [OpenHop Repeater](https://github.com/openhop-dev/openhop_repeater) companion nodes, and an internal test suite.
+
+The architecture notes below are entirely LLM-generated.
+
+---
+
+##
+
 `meshcore-tcp-mux` lets several existing MeshCore companion clients share one physical companion over its native TCP protocol. It is a protocol-aware command broker, not a second companion implementation:
 
 - Client commands and firmware responses remain native binary payloads.
