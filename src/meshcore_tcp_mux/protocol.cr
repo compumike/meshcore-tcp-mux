@@ -200,6 +200,26 @@ class MeshCoreTCPMux
       summary
     end
 
+    def self.received_text_message_identity(payload : Bytes) : String?
+      # Build a version-independent logical identity for inbox text. Retry
+      # attempts are not present in companion receive frames; path and V3 SNR
+      # describe this particular reception and therefore must not distinguish
+      # copies of the same sender timestamp and content.
+      return nil if payload.empty?
+      case payload[0]
+      when RESP_CONTACT_MESSAGE
+        received_contact_message_identity(payload, 1, 8, 9, 13)
+      when RESP_CONTACT_MESSAGE_V3
+        received_contact_message_identity(payload, 4, 11, 12, 16)
+      when RESP_CHANNEL_MESSAGE
+        received_channel_message_identity(payload, 1, 3, 4, 8)
+      when RESP_CHANNEL_MESSAGE_V3
+        received_channel_message_identity(payload, 4, 6, 7, 11)
+      else
+        nil
+      end
+    end
+
     def self.hex(bytes : Bytes) : String
       # Render wire bytes in a stable form suitable for correlating mux logs
       # with companion logs and packet captures.
@@ -355,6 +375,26 @@ class MeshCoreTCPMux
       " sender=#{hex(payload[peer_offset, 6])} path_encoding=#{hex_byte(payload[path_offset])}" \
       " type=#{payload[type_offset]} timestamp=#{read_u32(payload, timestamp_offset)}" \
       " text=#{text(payload[body_offset..])}"
+    end
+
+    private def self.received_contact_message_identity(payload : Bytes, sender_offset : Int32,
+                                                       type_offset : Int32, timestamp_offset : Int32,
+                                                       body_offset : Int32) : String?
+      # Direct-message identity includes the six-byte sender prefix. Without it,
+      # two contacts sending the same text in the same second would collide.
+      return nil if payload.size < body_offset
+      "direct:#{hex(payload[sender_offset, 6])}:#{payload[type_offset]}:" \
+      "#{read_u32(payload, timestamp_offset)}:#{hex(payload[body_offset..])}"
+    end
+
+    private def self.received_channel_message_identity(payload : Bytes, channel_offset : Int32,
+                                                       type_offset : Int32, timestamp_offset : Int32,
+                                                       body_offset : Int32) : String?
+      # Channel text carries its display sender inside the message bytes, so
+      # channel index plus the full body supplies the available logical source.
+      return nil if payload.size < body_offset
+      "channel:#{payload[channel_offset]}:#{payload[type_offset]}:" \
+      "#{read_u32(payload, timestamp_offset)}:#{hex(payload[body_offset..])}"
     end
 
     private def self.describe_channel_message(payload : Bytes, channel_offset : Int32, path_offset : Int32,

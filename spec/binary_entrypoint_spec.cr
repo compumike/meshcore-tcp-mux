@@ -43,4 +43,9 @@ describe MeshCoreTCPMux::BinaryEntrypoint do
     config.private_key_import.should be_false
     config.factory_reset.should be_false
   end
+
+  it "enables received-message deduplication only when requested" do
+    parse_policy_options([] of String).deduplicate_received_messages.should be_false
+    parse_policy_options(["--deduplicate-received-messages"]).deduplicate_received_messages.should be_true
+  end
 end

@@ -72,6 +72,9 @@ class MeshCoreTCPMux
       options.on("--reject-factory-reset", "Reject factory reset") do
         config.factory_reset = false
       end
+      options.on("--deduplicate-received-messages", "Discard duplicate received text messages") do
+        config.deduplicate_received_messages = true
+      end
 
       # These former opt-in switches are accepted so existing service command
       # lines continue to start. They are no-ops because their policies now

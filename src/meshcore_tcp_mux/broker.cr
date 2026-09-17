@@ -64,6 +64,7 @@ class MeshCoreTCPMux
     @now = Time::Span.zero
     @dm_ring : DmRing
     @remote : RemoteLease
+    @received_message_deduplicator : ReceivedMessageDeduplicator
     @signing = SigningLease.new
     @counters = Hash(Symbol, UInt64).new(0_u64)
     @last_unknown_log : Time::Span? = nil
@@ -78,6 +79,7 @@ class MeshCoreTCPMux
       @last_poll = now
       @dm_ring = @radio_state.dm_ring
       @remote = @radio_state.remote
+      @received_message_deduplicator = @radio_state.received_message_deduplicator
       @signing = SigningLease.new(@config.signing_timeout)
     end
 
@@ -834,6 +836,17 @@ class MeshCoreTCPMux
         end
       else
         @counters[:inbox_pops] += 1
+        if @config.deduplicate_received_messages && @received_message_deduplicator.duplicate?(payload)
+          # A duplicate has still been destructively removed from the physical
+          # inbox. Keep draining for the pending client sync instead of making
+          # the discarded copy appear to complete that request.
+          @counters[:duplicate_received_messages] += 1
+          @actions << Diagnostic.new("event=inbox.duplicate_discarded epoch=#{@epoch} " \
+                                     "count=#{@counters[:duplicate_received_messages]} " \
+                                     "#{Protocol.describe_response(payload)}", :debug)
+          @drain_requested = @drain_authorized && !@sessions.empty?
+          return
+        end
         fan_out_dedicated(payload)
         multi_clients = @sessions.values.select { |session| !session.dedicated? }
         if multi_clients.empty? && transaction.had_multi_client

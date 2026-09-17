@@ -39,6 +39,10 @@ class MeshCoreTCPMux
     # unobservable operation to finish without being overwritten after reconnect.
     property radio_uncertainty_timeout = 60.seconds
     property poll_interval = 5.seconds
+    # Suppress radio retries that the companion exposes as repeated logical
+    # inbox messages. Disabled by default because downstream clients normally
+    # own this protocol policy themselves.
+    property deduplicate_received_messages = false
     # Match a directly connected companion by default. Deployments that expose
     # the mux to clients which should not control identity state can reject each
     # sensitive operation independently through the corresponding CLI flag.

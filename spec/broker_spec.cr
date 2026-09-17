@@ -188,6 +188,52 @@ describe MeshCoreTCPMux::Broker do
     pop.payload.should eq(Bytes[10_u8])
   end
 
+  it "optionally discards duplicate received text and continues the physical drain" do
+    config = MeshCoreTCPMux::Config.new
+    config.deduplicate_received_messages = true
+    radio_state = MeshCoreTCPMux::CompanionRadioState.new
+
+    # CHANNEL_MESSAGE_V3 (0x11): SNR, two reserved bytes, channel, path,
+    # plain-text type, timestamp 0x04030201 little-endian, then text. Recording
+    # this first copy models a delivery during an earlier same-identity epoch.
+    first = Bytes[
+      0x11_u8, 0x04_u8, 0_u8, 0_u8, 2_u8, 1_u8, 0_u8,
+      1_u8, 2_u8, 3_u8, 4_u8,
+    ] + "sender: hello".to_slice
+    radio_state.received_message_deduplicator.duplicate?(first).should be_false
+
+    # Synthetic 32-byte companion public key; identifies the deduplication
+    # history across TCP epochs and never represents a real radio identity.
+    broker = MeshCoreTCPMux::Broker.new(30_i64, Bytes.new(32), config, radio_state: radio_state)
+    admit_settled(broker, [1_i64])
+
+    # SYNC_NEXT_MESSAGE (10): this explicit client request authorizes a
+    # destructive upstream drain until a new logical message or empty result.
+    broker.client_frame(1_i64, Bytes[10_u8], Time::Span.zero)
+    one(sends(broker.take_actions, 0_i64)).payload.should eq(Bytes[10_u8])
+
+    # The retry has different receive-only SNR and flood path length but the
+    # same channel, type, timestamp, and text. It is discarded globally before
+    # downstream fan-out, and the still-pending drain advances once more.
+    retry = first.dup
+    retry[1] = 0xf8_u8
+    retry[5] = 4_u8
+    broker.upstream_frame(retry, 2.milliseconds)
+    retry_actions = broker.take_actions
+    sends(retry_actions, 1_i64).should be_empty
+    one(sends(retry_actions, 0_i64)).payload.should eq(Bytes[10_u8])
+    duplicate_log = retry_actions.compact_map(&.as?(MeshCoreTCPMux::Diagnostic)).find do |diagnostic|
+      diagnostic.message.includes?("event=inbox.duplicate_discarded")
+    end
+    duplicate_log.should_not be_nil
+    duplicate_log.not_nil!.category.should eq(:debug)
+
+    # NO_MORE_MESSAGES (0x0a): the duplicate did not satisfy the original
+    # client sync; the actual empty terminator does.
+    broker.upstream_frame(Bytes[10_u8], 3.milliseconds)
+    one(sends(broker.take_actions, 1_i64)).payload.should eq(Bytes[10_u8])
+  end
+
   it "does not let an old empty observation consume a newer notification generation" do
     # Synthetic 32-byte companion public key; identifies the epoch, never a real radio key.
     broker = MeshCoreTCPMux::Broker.new(4_i64, Bytes.new(32))

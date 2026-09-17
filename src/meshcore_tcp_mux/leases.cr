@@ -1,4 +1,5 @@
 require "./protocol"
+require "./received_message_deduplicator"
 
 class MeshCoreTCPMux
   # Namespace for the TCP multiplexer: transport, protocol validation, and per-client state.
@@ -255,11 +256,13 @@ class MeshCoreTCPMux
   end
 
   class CompanionRadioState
-    # Owns radio work that survives replacement of the companion's TCP socket.
-    # Runtime retains this object only while startup proves the same public key;
-    # Broker removes downstream owners but preserves deadlines and ring position.
+    # Owns radio work and receive history that survive replacement of the
+    # companion's TCP socket. Runtime retains this object only while startup
+    # proves the same public key; Broker removes downstream owners but preserves
+    # deadlines, acknowledgement-ring position, and deduplication identities.
     getter dm_ring = DmRing.new
     getter remote = RemoteLease.new
+    getter received_message_deduplicator = ReceivedMessageDeduplicator.new
 
     @uncertain_until : Time::Span?
     @dm_cursor_uncertain = false

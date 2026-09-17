@@ -128,6 +128,13 @@ guarantee: an item is consumed from a dedicated queue when the mux accepts it
 for socket output, so a connection failure immediately afterward can still lose
 that item.
 
+Pass `--deduplicate-received-messages` to discard retry copies of received text
+channel messages and direct messages before they enter any downstream queue.
+The bounded, in-memory history is shared by all downstream clients and survives
+an upstream TCP reconnect to the same companion identity. Each discarded copy
+is recorded at `DEBUG` log level. The option is disabled by default because
+MeshCore clients are normally expected to implement this policy themselves.
+
 The command policy matches a direct companion connection by default: private-key
 export, private-key import, and factory reset are available. Export responses go
 only to the requesting connection. Import and factory reset still use the mux's
