@@ -8,6 +8,12 @@
 
 ---
 
+## 1.1.2
+
+- ProcessAlarmWatchdog to kill if process gets stuck or can't reconnect upstream within 5 minutes
+
+---
+
 ## 1.1.1
 
 - Updated documentation, README.md, etc.
