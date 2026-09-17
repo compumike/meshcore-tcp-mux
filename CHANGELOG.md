@@ -4,7 +4,7 @@
 
 ## Unreleased
 
-- (none)
+- Move some noisy logging to LOG_LEVEL=DEBUG
 
 ---
 

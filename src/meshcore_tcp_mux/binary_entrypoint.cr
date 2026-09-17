@@ -13,6 +13,7 @@ class MeshCoreTCPMux
       # Preserve stdout for --probe's machine-readable result while allowing the
       # standard LOG_LEVEL environment variable to select diagnostic verbosity.
       Log.setup_from_env(backend: Log::IOBackend.new(STDERR))
+      Log.info { "meshcore-tcp-mux #{VERSION}" }
       host : String? = nil
       port : Int32? = nil
       probe = false
