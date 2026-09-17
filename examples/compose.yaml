@@ -1,0 +1,26 @@
+services:
+  meshcore-tcp-mux:
+    image: compumike/meshcore-tcp-mux:latest
+    restart: unless-stopped
+    command:
+      - "--upstream-host"
+      - "192.168.1.50" # Replace this with the companion hostname or IP
+      - "--upstream-port"
+      - "5000"
+      - "--listen-host"
+      - "0.0.0.0" # Must bind to 0.0.0.0 *inside* the container, even if you bind only to localhost in the "ports" section.
+      - "--listen-multi-client-port"
+      - "5001"
+      - "--listen-dedicated-client-port"
+      - "5002"
+      - "--listen-dedicated-client-port"
+      - "5003"
+      - "--listen-dedicated-client-port"
+      - "5004"
+    ports:
+      - "127.0.0.1:5001-5004:5001-5004/tcp" # Change "127.0.0.1" to "0.0.0.0" if you want to connect to meshcore-tcp-mux from other devices.
+    environment:
+      LOG_LEVEL: "INFO" # Change to "DEBUG" for more verbose logging
+    read_only: true
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]

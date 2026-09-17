@@ -4,7 +4,7 @@
 
 ## Unreleased
 
-- Move some noisy logging to LOG_LEVEL=DEBUG
+- (none)
 
 ---
 

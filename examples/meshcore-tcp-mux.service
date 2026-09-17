@@ -1,5 +1,5 @@
 [Unit]
-Description=MeshCore TCP multiplexer
+Description=meshcore-tcp-mux MeshCore TCP multiplexer
 After=network-online.target
 Wants=network-online.target
 
