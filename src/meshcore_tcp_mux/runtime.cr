@@ -372,13 +372,15 @@ class MeshCoreTCPMux
               LOGGER.info { "event=upstream.response_debt_drained epoch=#{broker.epoch}" }
             end
           when Transport::Closed
-            wait_for_unresolved_response_debt(
+            upstream.stop
+            quarantine_unresolved_response_debt(
               broker.epoch,
               "upstream closed while an old command could still complete: #{event.reason}"
             )
             return
           when Transport::WriteFailed
-            wait_for_unresolved_response_debt(
+            upstream.stop
+            quarantine_unresolved_response_debt(
               broker.epoch,
               "upstream writer failed while an old command could still complete: #{event.reason}"
             )
@@ -399,22 +401,27 @@ class MeshCoreTCPMux
         end
       end
     rescue ex : Protocol::ProtocolError
-      wait_for_unresolved_response_debt(
+      upstream.stop
+      quarantine_unresolved_response_debt(
         broker.epoch,
         "response debt received an invalid or mismatched ordinary frame: #{ex.message}"
       )
     end
 
-    private def wait_for_unresolved_response_debt(epoch : Int64, reason : String) : Nil
-      # Without a response on the old connection, an implementation whose
-      # command tasks outlive TCP replacement offers no finite safe reconnect
-      # point. Stay unavailable until an operator stops or resets the upstream
-      # rather than risk assigning its future reply to a new client's command.
+    private def quarantine_unresolved_response_debt(epoch : Int64, reason : String) : Nil
+      # A companion whose command tasks outlive TCP replacement exposes no
+      # protocol-level completion signal after the old socket is lost. Keep the
+      # replacement connection absent for one full response horizon so a late
+      # handler writes into the poisoned old generation, then recover through
+      # the normal startup fence. This is a bounded operational quarantine, not
+      # proof that an arbitrarily delayed third-party handler has terminated.
+      deadline = Clock.now + @config.response_timeout
       LOGGER.error do
         "event=upstream.response_debt_unresolved epoch=#{epoch} " \
-        "recovery=upstream_reset_required reason=#{reason.inspect}"
+        "recovery=bounded_quarantine quarantine_ms=#{@config.response_timeout.total_milliseconds.round} " \
+        "reason=#{reason.inspect}"
       end
-      until @stop_requested
+      until @stop_requested || Clock.now >= deadline
         select
         when accepted = @accepted.receive
           socket = accepted.socket
@@ -425,6 +432,14 @@ class MeshCoreTCPMux
           socket.close
         when @stopping.receive?
           return
+        when timeout(100.milliseconds)
+          # Recheck the monotonic quarantine deadline.
+        end
+      end
+      unless @stop_requested
+        LOGGER.warn do
+          "event=upstream.response_debt_quarantine_complete epoch=#{epoch} " \
+          "recovery=reconnect"
         end
       end
     end

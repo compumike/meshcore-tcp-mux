@@ -300,6 +300,33 @@ describe MeshCoreTCPMux::Runtime, "fault and epoch boundaries" do
     companion.try &.stop
   end
 
+  it "bounds quarantine when response debt receives a mismatched late frame" do
+    companion = SpecSupport::RuntimeCompanion.new
+    runtime, config, runtime_done = start_fault_runtime(companion)
+    await_epoch_ready(companion, 1)
+    client = admit_client(companion, config, 1)
+
+    # GET_DEVICE_TIME (5) owns CURRENT_TIME, but the scripted companion first
+    # omits its reply and lets the 100-millisecond test deadline expire.
+    send_command(client, Bytes[5_u8])
+    next_command(companion, 5_u8, 1)
+    companion.drop
+    expect_closed(client)
+
+    # OK cannot satisfy GET_DEVICE_TIME. Runtime closes the poisoned socket,
+    # waits one configured response horizon, and then reconnects instead of
+    # refusing clients forever.
+    companion.push(Bytes[0_u8])
+    await_epoch_ready(companion, 2)
+    replacement = admit_client(companion, config, 2)
+  ensure
+    client.try &.close
+    replacement.try &.close
+    runtime.try &.stop
+    runtime_done.try &.receive
+    companion.try &.stop
+  end
+
   [:timeout, :disconnect].each do |fault|
     it "never replays a transmit command after upstream #{fault} following its write" do
       companion = SpecSupport::RuntimeCompanion.new

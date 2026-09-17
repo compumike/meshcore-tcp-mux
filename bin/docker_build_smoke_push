@@ -1,0 +1,6 @@
+#!/bin/bash
+set -e
+
+cd "$(dirname "$0")"/..
+
+direnv exec . make docker-build && direnv exec . make docker-smoke PYTHON="$PWD/.venv/bin/python" && direnv exec . make docker-push DOCKER_BUILDER=meshcore-multiarch
