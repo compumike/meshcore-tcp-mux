@@ -17,8 +17,10 @@ services:
       - "5003"
       - "--listen-dedicated-client-port"
       - "5004"
+      - "--listen-dedicated-client-port"
+      - "5005"
     ports:
-      - "127.0.0.1:5001-5004:5001-5004/tcp" # Change "127.0.0.1" to "0.0.0.0" if you want to connect to meshcore-tcp-mux from other devices.
+      - "127.0.0.1:5001-5005:5001-5005/tcp" # Change "127.0.0.1" to "0.0.0.0" if you want to connect to meshcore-tcp-mux from other devices.
     environment:
       LOG_LEVEL: "INFO" # Change to "DEBUG" for more verbose logging
     read_only: true
