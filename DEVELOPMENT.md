@@ -173,6 +173,8 @@ contact no physical radio. Compiler, Python, source, and test dependencies stay
 out of the runtime image. An allowlisted `.dockerignore` excludes environment
 files, git history, local caches, host-built binaries, and live-test reports.
 
+This builds an image with the `dev` tag.
+
 Publishing is a separate, explicit operation. Authenticate to Docker Hub with
 permission to push `compumike/meshcore-tcp-mux`, and select a Buildx builder
 supporting both target architectures, through native nodes or QEMU emulation:
@@ -180,11 +182,11 @@ supporting both target architectures, through native nodes or QEMU emulation:
 ```sh
 docker login
 direnv exec . make docker-push DOCKER_BUILDER=YOUR_MULTIARCH_BUILDER
-docker buildx imagetools inspect compumike/meshcore-tcp-mux:latest
+docker buildx imagetools inspect compumike/meshcore-tcp-mux:dev
 ```
 
 `docker-push` builds and tests **both** platforms before pushing the shared
-`latest` tag. `docker-build` never pushes. `DOCKER_IMAGE`, `DOCKER_PLATFORMS`, and
+`dev` tag. `docker-build` never pushes. `DOCKER_IMAGE`, `DOCKER_PLATFORMS`, and
 `DOCKER_BUILDER` are overridable Make variables. Version tags are selected
 explicitly as described below.
 For builder setup, see [Docker's multi-platform guide](https://docs.docker.com/build/building/multi-platform/).
@@ -194,8 +196,9 @@ and the Dockerfile's compiler tag/index digest together.
 
 ### Versioned releases
 
-The current release version is **1.0.0**. `meshcore-tcp-mux --version` prints
+The examples here release version `1.0.0`. `meshcore-tcp-mux --version` prints
 the version without connecting to a companion or requiring upstream arguments.
+
 When preparing a new release, update `shard.yml` and
 `src/meshcore_tcp_mux/version.cr` together, run the local checks, and commit the
 reviewed release changes before creating the source tag.
@@ -204,35 +207,32 @@ Tag and push the reviewed source commit to your configured Git remote:
 
 ```sh
 git tag -a v1.0.0 -m 'meshcore-tcp-mux 1.0.0'
-git push origin HEAD
-git push origin v1.0.0
+git push --atomic origin HEAD v1.0.0
 ```
 
-Build, test, and publish the matching multi-platform image with an explicit
-version tag. Authenticate to Docker Hub first and select a builder supporting
-both target architectures:
+Build, test, and publish the matching multi-platform image to the `dev` tag:
 
-```sh
-docker login
-direnv exec . make docker-push \
-  DOCKER_IMAGE=compumike/meshcore-tcp-mux:1.0.0 \
-  DOCKER_BUILDER=YOUR_MULTIARCH_BUILDER
-docker buildx imagetools inspect compumike/meshcore-tcp-mux:1.0.0
+```
+docker_build_smoke_push_dev
 ```
 
-After verifying the versioned image, optionally point `latest` at the same
+After verifying the image, point `latest` and the versioned tag at the same
 multi-platform image without rebuilding it:
 
 ```sh
 docker buildx imagetools create \
   --tag compumike/meshcore-tcp-mux:latest \
-  compumike/meshcore-tcp-mux:1.0.0
+  --tag compumike/meshcore-tcp-mux:v1.0.0 \
+  compumike/meshcore-tcp-mux:dev
 ```
 
-One-line build/smoke/push:
+One-line build/smoke/push to `dev` tag:
 
 ```sh
 direnv exec . make docker-build && direnv exec . make docker-smoke PYTHON="$PWD/.venv/bin/python" && direnv exec . make docker-push DOCKER_BUILDER=meshcore-multiarch
+
+# Also aliased as
+bin/docker_build_smoke_push_dev
 ```
 
 Do not move an already published version tag to different source or image

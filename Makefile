@@ -6,7 +6,7 @@ export CRYSTAL_CACHE_DIR
 CRYSTAL ?= crystal
 BUILD_FLAGS ?=
 PYTHON ?= python3
-DOCKER_IMAGE ?= compumike/meshcore-tcp-mux:latest
+DOCKER_IMAGE ?= compumike/meshcore-tcp-mux:dev
 DOCKER_PLATFORMS ?= linux/amd64,linux/arm64
 DOCKER_BUILDER ?=
 DOCKER_BUILDER_FLAG = $(if $(DOCKER_BUILDER),--builder $(DOCKER_BUILDER),)

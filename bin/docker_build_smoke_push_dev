@@ -3,4 +3,6 @@ set -e
 
 cd "$(dirname "$0")"/..
 
+# After a successful local architecture build & smoke test,
+# creates a multi-architecture docker image and pushes it.
 direnv exec . make docker-build && direnv exec . make docker-smoke PYTHON="$PWD/.venv/bin/python" && direnv exec . make docker-push DOCKER_BUILDER=meshcore-multiarch

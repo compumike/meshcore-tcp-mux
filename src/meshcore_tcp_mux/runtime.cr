@@ -14,7 +14,7 @@ class MeshCoreTCPMux
     # Owns the listener, upstream epochs, socket fibers, and Broker side effects.
     # The Broker is invoked only by this fiber.
     alias ConnectResult = TCPSocket | Exception
-    LOGGER = Log.for("meshcore_tcp_mux.runtime")
+    LOGGER = Log
 
     enum ListenerKind
       # Multi-client accepts anonymous concurrent sessions; dedicated-client

@@ -18,3 +18,8 @@
 **/*~
 **/.*.swp
 **/__pycache__/
+
+# Exclude env files and local temporary work
+.env
+design_docs/
+local_tmp/
