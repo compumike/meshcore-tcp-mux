@@ -8,6 +8,12 @@
 
 ---
 
+## 1.1.1
+
+- Updated documentation, README.md, etc.
+
+---
+
 ## 1.1.0
 
 - `--deduplicate-received-messages` feature: don't forward received channel or DM texts with different attempt numbers
