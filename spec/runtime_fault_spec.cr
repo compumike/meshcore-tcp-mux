@@ -261,6 +261,10 @@ describe MeshCoreTCPMux::Runtime, "fault and epoch boundaries" do
     # Rebinding proves startup closed the earlier multi-client listener instead
     # of exposing a partial listener set after the dedicated-port failure.
     rebound = TCPServer.new("127.0.0.1", config.listen_multi_client_port)
+
+    # Runtime owns closed lifecycle channels after its first attempt. Reuse
+    # must fail immediately instead of binding and later blocking on completion.
+    expect_raises(Exception, /single-use/) { runtime.run }
   ensure
     rebound.try &.close
     occupied.try &.close
@@ -317,6 +321,30 @@ describe MeshCoreTCPMux::Runtime, "fault and epoch boundaries" do
     # waits one configured response horizon, and then reconnects instead of
     # refusing clients forever.
     companion.push(Bytes[0_u8])
+    await_epoch_ready(companion, 2)
+    replacement = admit_client(companion, config, 2)
+  ensure
+    client.try &.close
+    replacement.try &.close
+    runtime.try &.stop
+    runtime_done.try &.receive
+    companion.try &.stop
+  end
+
+  it "bounds poisoned draining when the old connection stays silent and open" do
+    companion = SpecSupport::RuntimeCompanion.new
+    runtime, config, runtime_done = start_fault_runtime(companion)
+    await_epoch_ready(companion, 1)
+    client = admit_client(companion, config, 1)
+
+    # GET_DEVICE_TIME (5) receives no reply. One response horizon expires the
+    # owned transaction; a second bounds the poisoned drain; a third-party
+    # handler quarantine then expires before normal startup reconnects.
+    send_command(client, Bytes[5_u8])
+    next_command(companion, 5_u8, 1)
+    companion.drop
+    expect_closed(client)
+
     await_epoch_ready(companion, 2)
     replacement = admit_client(companion, config, 2)
   ensure

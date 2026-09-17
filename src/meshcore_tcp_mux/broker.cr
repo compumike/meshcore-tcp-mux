@@ -304,9 +304,16 @@ class MeshCoreTCPMux
     end
 
     def fail_epoch(reason : String) : Nil
-      # Discard uncertain upstream ownership and disconnect all clients. Never replay a possibly executed command.
+      # Disconnect every client and never replay a possibly executed command.
+      # Preserve its response grammar for Runtime whenever an upstream command
+      # was still awaiting a reply. Timeout is only one way an asynchronous
+      # handler can outlive its TCP epoch; EOF, writer failure, and malformed or
+      # unexpected frames need the same cross-generation fence.
       return if @failed
       preserve_radio_uncertainty
+      if (transaction = @active) && !transaction.step.maintenance_result?
+        @response_debt ||= transaction
+      end
       @failed = true
       @actions << Diagnostic.new("epoch=#{@epoch} failed reason=#{reason.inspect}")
       @sessions.keys.each { |id| remove(id, "upstream epoch failed") }

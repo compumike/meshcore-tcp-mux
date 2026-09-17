@@ -12,6 +12,7 @@ describe MeshCoreTCPMux::Config do
     config.offline_queue_size.should eq(256)
     config.command_age.should eq(15.seconds)
     config.virtual_sync_timeout.should eq(30.seconds)
+    config.connect_timeout.should eq(5.seconds)
     config.response_timeout.should eq(20.seconds)
     config.radio_uncertainty_timeout.should eq(60.seconds)
     config.private_key_export.should be_true
@@ -61,6 +62,12 @@ describe MeshCoreTCPMux::Config do
   it "rejects a nonpositive virtual sync deadline" do
     config = MeshCoreTCPMux::Config.new
     config.virtual_sync_timeout = Time::Span.zero
+    expect_raises(ArgumentError, /deadlines/) { config.validate! }
+  end
+
+  it "rejects a nonpositive DNS and TCP connection deadline" do
+    config = MeshCoreTCPMux::Config.new
+    config.connect_timeout = Time::Span.zero
     expect_raises(ArgumentError, /deadlines/) { config.validate! }
   end
 

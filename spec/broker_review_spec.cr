@@ -151,6 +151,20 @@ describe "broker event-order regressions" do
     broker.orphan.should eq(message)
   end
 
+  it "retains ordinary response ownership when EOF ends an active epoch" do
+    broker = review_ready_broker
+    broker.client_frame(1_i64, Bytes[BrokerReviewProtocol::CMD_GET_DEVICE_TIME], Time::Span.zero)
+    query = review_sends(broker.take_actions, 0_i64).first
+    broker.written(0_i64, query.epoch, query.write_id, Time::Span.zero)
+
+    # The socket can disappear while an asynchronous companion handler remains
+    # alive. Keep CURRENT_TIME ownership so Runtime quarantines before admitting
+    # a replacement epoch rather than assigning that late reply to new work.
+    broker.fail_epoch("synthetic upstream EOF")
+    broker.response_debt.should_not be_nil
+    broker.response_debt.not_nil!.descriptor.name.should eq(:get_device_time)
+  end
+
   it "keeps a scoped send alive when each hidden substep exceeds five seconds" do
     broker = review_ready_broker
     broker.client_frame(

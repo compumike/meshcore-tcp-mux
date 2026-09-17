@@ -20,6 +20,9 @@ class MeshCoreTCPMux
     property virtual_sync_timeout = 30.seconds
     property inbox_entries = 256
     property output_frames = 512
+    # Bound both hostname resolution and TCP establishment. A connect timeout
+    # alone begins only after DNS has returned in Crystal's socket API.
+    property connect_timeout = 5.seconds
     property frame_timeout = 5.seconds
     property write_timeout = 5.seconds
     # openHop companions await radio injection and persistence work before
@@ -66,7 +69,7 @@ class MeshCoreTCPMux
       unless {@command_limit, @inbox_entries, @offline_queue_size, @output_frames}.all? { |n| n > 0 }
         raise ArgumentError.new("queue budgets must be positive")
       end
-      unless {@command_age, @virtual_sync_timeout, @frame_timeout, @write_timeout, @response_timeout, @contacts_timeout,
+      unless {@command_age, @virtual_sync_timeout, @connect_timeout, @frame_timeout, @write_timeout, @response_timeout, @contacts_timeout,
               @startup_timeout, @signing_timeout, @radio_uncertainty_timeout,
               @poll_interval}.all? { |duration| duration > Time::Span.zero }
         raise ArgumentError.new("deadlines and polling interval must be positive")

@@ -33,6 +33,8 @@ class MeshCoreTCPMux
     @accept_done = Channel(Nil).new(1)
     @accept_error : Exception? = nil
     @running = false
+    @has_run = false
+    @upstream_connection_usable = false
     @stop_requested = false
     @listeners = Array(ListenerBinding).new
     @upstream : Transport::Endpoint? = nil
@@ -59,94 +61,97 @@ class MeshCoreTCPMux
       # Own the listener and every upstream epoch until shutdown. Unexpected
       # acceptor failure is process-fatal; propagate it only after cleanup so
       # BinaryEntrypoint exits nonzero and a supervisor can restart the daemon.
-      raise "runtime already running" if @running
+      raise "runtime is single-use" if @has_run
+      @has_run = true
       @running = true
-      @listeners = bind_listeners
-      @listeners.each do |listener|
-        LOGGER.info do
-          "event=listener.started kind=#{listener.kind.to_s.underscore} " \
-          "dedicated_slot_id=#{listener.dedicated_slot_id || "none"} " \
-          "address=#{socket_address(listener.server.local_address)} upstream=#{@host}:#{@port}"
+      begin
+        @listeners = bind_listeners
+        @listeners.each do |listener|
+          LOGGER.info do
+            "event=listener.started kind=#{listener.kind.to_s.underscore} " \
+            "dedicated_slot_id=#{listener.dedicated_slot_id || "none"} " \
+            "address=#{socket_address(listener.server.local_address)} upstream=#{@host}:#{@port}"
+          end
+          start_acceptor(listener)
         end
-        start_acceptor(listener)
-      end
-      backoff = 500.milliseconds
+        backoff = 500.milliseconds
 
-      until @stop_requested
-        socket = connect_upstream
-        unless socket
+        until @stop_requested
+          socket = connect_upstream
+          unless socket
+            break if @stop_requested
+            delay = jitter(backoff)
+            LOGGER.info { "event=upstream.reconnect_scheduled remote=#{@host}:#{@port} delay_ms=#{delay.total_milliseconds.round}" }
+            wait_with_refusal(delay)
+            backoff = {backoff * 2, 30.seconds}.min
+            next
+          end
+          @next_epoch += 1
+          upstream_events = Channel(Transport::Event).new
+          endpoint = Transport::Endpoint.new(
+            socket, 0_i64,
+            FrameCodec::COMPANION_TO_CLIENT_MARKER,
+            FrameCodec::CLIENT_TO_COMPANION_MARKER,
+            upstream_events,
+            @config.frame_timeout,
+            @config.write_timeout,
+            16
+          )
+          @upstream = endpoint
+
+          begin
+            startup = synchronize(endpoint, upstream_events, @next_epoch)
+            break if @stop_requested
+            self_key = startup.self_key.not_nil!
+            orphan = orphan_for(self_key)
+            prepare_dedicated_slots(self_key)
+            radio_state = radio_state_for(self_key)
+            broker = Broker.new(@next_epoch, self_key, @config, Clock.now, orphan, @dedicated_slots, radio_state)
+            ready_at = Clock.now
+            @upstream_connection_usable = true
+            LOGGER.info { "event=upstream.ready epoch=#{@next_epoch} remote=#{socket_address(socket.remote_address)} #{startup.identification}" }
+            run_epoch(broker, endpoint, upstream_events)
+            drain_response_debt(broker, endpoint, upstream_events) if broker.response_debt && !@stop_requested
+            @orphan = broker.orphan.try(&.dup)
+            @orphan_key = @orphan ? self_key : nil
+            backoff = 500.milliseconds if Clock.now - ready_at >= 30.seconds
+          rescue ex
+            LOGGER.error(exception: ex) { "event=upstream.epoch_failed epoch=#{@next_epoch}" }
+          ensure
+            endpoint.stop
+            @upstream = nil
+            close_all_clients
+          end
+
           break if @stop_requested
           delay = jitter(backoff)
           LOGGER.info { "event=upstream.reconnect_scheduled remote=#{@host}:#{@port} delay_ms=#{delay.total_milliseconds.round}" }
           wait_with_refusal(delay)
           backoff = {backoff * 2, 30.seconds}.min
-          next
         end
-        @next_epoch += 1
-        upstream_events = Channel(Transport::Event).new
-        endpoint = Transport::Endpoint.new(
-          socket, 0_i64,
-          FrameCodec::COMPANION_TO_CLIENT_MARKER,
-          FrameCodec::CLIENT_TO_COMPANION_MARKER,
-          upstream_events,
-          @config.frame_timeout,
-          @config.write_timeout,
-          16
-        )
-        @upstream = endpoint
-
-        begin
-          startup = synchronize(endpoint, upstream_events, @next_epoch)
-          break if @stop_requested
-          self_key = startup.self_key.not_nil!
-          orphan = orphan_for(self_key)
-          prepare_dedicated_slots(self_key)
-          radio_state = radio_state_for(self_key)
-          broker = Broker.new(@next_epoch, self_key, @config, Clock.now, orphan, @dedicated_slots, radio_state)
-          ready_at = Clock.now
-          LOGGER.info { "event=upstream.ready epoch=#{@next_epoch} remote=#{socket_address(socket.remote_address)} #{startup.identification}" }
-          run_epoch(broker, endpoint, upstream_events)
-          drain_response_debt(broker, endpoint, upstream_events) if broker.response_debt && !@stop_requested
-          @orphan = broker.orphan.try(&.dup)
-          @orphan_key = @orphan ? self_key : nil
-          backoff = 500.milliseconds if Clock.now - ready_at >= 30.seconds
-        rescue ex
-          LOGGER.error(exception: ex) { "event=upstream.epoch_failed epoch=#{@next_epoch}" }
-        ensure
-          endpoint.stop
-          @upstream = nil
-          close_all_clients
+        if error = @accept_error
+          raise error
         end
-
-        break if @stop_requested
-        delay = jitter(backoff)
-        LOGGER.info { "event=upstream.reconnect_scheduled remote=#{@host}:#{@port} delay_ms=#{delay.total_milliseconds.round}" }
-        wait_with_refusal(delay)
-        backoff = {backoff * 2, 30.seconds}.min
+      ensure
+        @stop_requested = true
+        @stopping.close unless @stopping.closed?
+        @listeners.each { |listener| listener.server.close rescue nil }
+        @upstream.try &.stop
+        close_all_clients
+        @listeners.size.times { @accept_done.receive }
+        @listeners.clear
+        unread = @dedicated_slots.values.sum(&.offline_queue.size)
+        LOGGER.info { "event=dedicated_queues.volatile_discard process_stopping=true entries=#{unread}" } unless unread.zero?
+        @running = false
+        LOGGER.info { "event=runtime.stopped" }
+        @finished.send(nil)
       end
-      if error = @accept_error
-        raise error
-      end
-    ensure
-      @stop_requested = true
-      @stopping.close unless @stopping.closed?
-      @listeners.each { |listener| listener.server.close rescue nil }
-      @upstream.try &.stop
-      close_all_clients
-      @listeners.size.times { @accept_done.receive }
-      @listeners.clear
-      unread = @dedicated_slots.values.sum(&.offline_queue.size)
-      LOGGER.info { "event=dedicated_queues.volatile_discard process_stopping=true entries=#{unread}" } unless unread.zero?
-      @running = false
-      LOGGER.info { "event=runtime.stopped" }
-      @finished.send(nil)
     end
 
     def stop : Nil
       # Request cancellation and join the runtime from an external fiber.
       # The acceptor uses request_stop without joining, avoiding a circular wait.
-      return if @stop_requested
-      request_stop
+      request_stop unless @stop_requested
       @finished.receive if @running
     end
 
@@ -231,7 +236,12 @@ class MeshCoreTCPMux
       done = Channel(Nil).new(1)
       spawn do
         begin
-          socket = TCPSocket.new(@host, @port, connect_timeout: 5.seconds)
+          socket = TCPSocket.new(
+            @host,
+            @port,
+            dns_timeout: @config.connect_timeout,
+            connect_timeout: @config.connect_timeout
+          )
           result.send(socket)
         rescue ex
           result.send(ex)
@@ -354,13 +364,23 @@ class MeshCoreTCPMux
       # work until its response grammar terminates. Reconnecting first can let
       # an old handler write an untagged reply into the replacement connection.
       transaction = broker.response_debt.not_nil!
+      unless @upstream_connection_usable
+        upstream.stop
+        quarantine_unresolved_response_debt(
+          broker.epoch,
+          "the upstream connection ended with an ordinary response still outstanding"
+        )
+        return
+      end
       LOGGER.warn do
         "event=upstream.response_debt_draining epoch=#{broker.epoch} " \
         "command=#{transaction.descriptor.name} opcode=#{transaction.command[0]} " \
-        "owner=#{transaction.owner} step=#{transaction.step.to_s.underscore}"
+        "owner=#{transaction.owner} step=#{transaction.step.to_s.underscore} " \
+        "deadline_ms=#{@config.response_timeout.total_milliseconds.round}"
       end
 
-      while broker.response_debt && !@stop_requested
+      deadline = Clock.now + @config.response_timeout
+      while broker.response_debt && !@stop_requested && Clock.now < deadline
         select
         when event = upstream_events.receive
           case event
@@ -398,7 +418,17 @@ class MeshCoreTCPMux
           socket.close
         when @stopping.receive?
           return
+        when timeout(100.milliseconds)
+          # Recheck the monotonic drain deadline even when the poisoned
+          # connection remains silent and open.
         end
+      end
+      if broker.response_debt && !@stop_requested
+        upstream.stop
+        quarantine_unresolved_response_debt(
+          broker.epoch,
+          "no terminal response arrived during the bounded poisoned drain"
+        )
       end
     rescue ex : Protocol::ProtocolError
       upstream.stop
@@ -474,13 +504,16 @@ class MeshCoreTCPMux
       when Transport::Frame
         LOGGER.info { WireLog.upstream(broker.epoch, :rx, event.payload) }
         broker.upstream_frame(event.payload, now)
+        @upstream_connection_usable = false if broker.failed
       when Transport::Closed
+        @upstream_connection_usable = false
         LOGGER.warn { "event=upstream.closed epoch=#{broker.epoch} reason=#{event.reason.inspect}" }
         broker.fail_epoch("upstream closed: #{event.reason}")
       when Transport::Written
         LOGGER.debug { "event=upstream.write_completed epoch=#{event.epoch} write_id=#{event.write_id}" }
         broker.written(0_i64, event.epoch, event.write_id, now)
       when Transport::WriteFailed
+        @upstream_connection_usable = false
         LOGGER.error { "event=upstream.write_failed epoch=#{event.epoch} write_id=#{event.write_id} reason=#{event.reason.inspect}" }
         broker.write_failed(0_i64, event.epoch, event.reason, now)
       end
