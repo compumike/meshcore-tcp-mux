@@ -8,6 +8,13 @@
 
 ---
 
+## 1.1.0
+
+- `--deduplicate-received-messages` feature: don't forward received channel or DM texts with different attempt numbers
+- Move some noisy logging to LOG_LEVEL=DEBUG
+
+---
+
 ## 1.0.0
 
 - Initial release

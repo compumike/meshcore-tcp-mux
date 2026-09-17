@@ -1,4 +1,4 @@
 name: meshcore-tcp-mux
-version: 1.0.0
+version: 1.1.0
 description: Protocol-aware TCP multiplexer for a shared MeshCore companion.
 license: MIT
