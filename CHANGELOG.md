@@ -8,6 +8,12 @@
 
 ---
 
+## 1.1.3
+
+- Upgrade Alpine container base image
+
+---
+
 ## 1.1.2
 
 - ProcessAlarmWatchdog to kill if process gets stuck or can't reconnect upstream within 5 minutes
