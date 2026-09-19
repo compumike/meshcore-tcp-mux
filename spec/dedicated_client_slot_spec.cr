@@ -208,6 +208,6 @@ describe MeshCoreTCPMux::Broker, "dedicated client queues" do
     blocked.offline_queue.to_a.should eq([retained])
     replaceable.offline_queue.to_a.should eq([arrival])
     dedicated_sends(actions, 1_i64).map(&.payload).should contain(arrival)
-    actions.compact_map(&.as?(MeshCoreTCPMux::Diagnostic)).map(&.message).join('\n').should contain("new_message_discarded")
+    actions.compact_map(&.as?(MeshCoreTCPMux::Diagnostic)).map(&.message).join('\n').should contain("new_direct_message_discarded")
   end
 end

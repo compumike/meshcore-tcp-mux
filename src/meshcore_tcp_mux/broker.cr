@@ -867,9 +867,9 @@ class MeshCoreTCPMux
         result = slot.enqueue_offline(payload, @config.offline_queue_size)
         case result
         when DedicatedClientSlot::EnqueueResult::ChannelEvicted
-          warn_dedicated_overflow(slot, "channel_evicted")
+          warn_dedicated_overflow(slot, "oldest_channel_message_evicted")
         when DedicatedClientSlot::EnqueueResult::NewMessageDiscarded
-          warn_dedicated_overflow(slot, "new_message_discarded")
+          warn_dedicated_overflow(slot, "new_direct_message_discarded")
           next
         when DedicatedClientSlot::EnqueueResult::Added
           # Normal bounded enqueue needs no warning.
@@ -905,7 +905,7 @@ class MeshCoreTCPMux
       @last_dedicated_overflow_log[dedicated_slot_id] = @now
       @actions << Diagnostic.new("event=dedicated_queue.#{event} epoch=#{@epoch} " \
                                  "dedicated_slot_id=#{dedicated_slot_id} depth=#{slot.offline_queue.size} " \
-                                 "suppressed_since_last=#{suppressed}", :warn)
+                                 "suppressed_since_last=#{suppressed}", :debug)
     end
 
     private def enqueue_multi_client(session : Session, payload : Bytes) : Nil

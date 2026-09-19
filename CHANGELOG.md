@@ -4,7 +4,7 @@
 
 ## Unreleased
 
-- (none)
+- `MeshCoreTCPMux::Broker.fan_out_dedicated`: reduce log level to debug for dedicated-client inbox overflow events
 
 ---
 
