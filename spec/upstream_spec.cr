@@ -144,11 +144,13 @@ describe MeshCoreTCPMux::Upstream do
 
   it "times out finitely when a required probe response is dropped" do
     fake = IsolatedProbeCompanion.new(:drop_device_query)
-    started = Time.instant
+    # Use the project's compatibility clock so this timing bound runs on both
+    # pre-1.19 Crystal and newer Time::Instant-based compilers.
+    started = MeshCoreTCPMux::Clock.now
     expect_raises(MeshCoreTCPMux::Startup::Error, /timeout/) do
       MeshCoreTCPMux::Upstream.probe("127.0.0.1", fake.port, probe_config)
     end
-    (Time.instant - started).should be < 1.second
+    (MeshCoreTCPMux::Clock.now - started).should be < 1.second
   ensure
     fake.try &.close
   end

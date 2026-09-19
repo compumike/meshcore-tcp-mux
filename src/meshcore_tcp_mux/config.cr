@@ -86,10 +86,24 @@ class MeshCoreTCPMux
 
   class Clock
     # Supplies monotonic elapsed time for deadlines, unaffected by wall-clock corrections.
-    ORIGIN = Time.instant
+    # Crystal 1.19 introduced Time::Instant to distinguish a monotonic clock
+    # reading from a duration. Older supported compilers return the reading as
+    # Time::Span through Time.monotonic, but subtracting two readings has the
+    # same elapsed-time result in either representation.
+    {% if compare_versions(Crystal::VERSION, "1.19.0") >= 0 %}
+      ORIGIN = Time.instant
 
-    def self.now : Time::Span
-      Time.instant - ORIGIN
-    end
+      def self.now : Time::Span
+        # Subtracting two monotonic instants produces the elapsed duration.
+        Time.instant - ORIGIN
+      end
+    {% else %}
+      ORIGIN = Time.monotonic
+
+      def self.now : Time::Span
+        # Older Crystal versions expose monotonic readings as Time::Span values.
+        Time.monotonic - ORIGIN
+      end
+    {% end %}
   end
 end
