@@ -4,7 +4,7 @@ CRYSTAL_CACHE_DIR := $(CURDIR)/.crystal-cache
 export CRYSTAL_CACHE_DIR
 
 CRYSTAL ?= crystal
-BUILD_FLAGS ?=
+BUILD_FLAGS ?= --verbose --stats --progress --time --threads 8
 PYTHON ?= python3
 DOCKER_IMAGE ?= compumike/meshcore-tcp-mux:dev
 DOCKER_PLATFORMS ?= linux/amd64,linux/arm64

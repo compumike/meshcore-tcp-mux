@@ -5,6 +5,7 @@
 ## Unreleased
 
 - `MeshCoreTCPMux::Broker.fan_out_dedicated`: reduce log level to debug for dedicated-client inbox overflow events
+- Reorder Dockerfile for better caching / faster builds. In Makefile, use threaded Crystal compilation
 
 ---
 
