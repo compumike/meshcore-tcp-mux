@@ -631,8 +631,13 @@ class MeshCoreTCPMux
         n >= 1
       when CMD_SET_ADVERT_NAME # At least one name byte.
         n >= 2
-      when CMD_ADD_UPDATE_CONTACT # Accept native contact record variants; byte 35 encodes its outbound path.
-        return false unless n == 136 || n == 144 || n >= 148
+      when CMD_ADD_UPDATE_CONTACT # Byte 35 encodes the contact's outbound path.
+        # The payload length excludes the TCP envelope. Native contact records
+        # end after the advert timestamp (136 bytes), GPS coordinates (144), or
+        # a four-byte last-modified timestamp (148+). MeshCore One also appends
+        # three reserved bytes after the GPS fields (147 bytes); the companion
+        # ignores them and assigns its own last-modified timestamp.
+        return false unless n == 136 || n == 144 || n == 147 || n >= 148
         # 0xff means no learned outbound path; otherwise decode its count and hash width.
         p[35] == NO_PATH_ENCODING || !normal_encoded_path_bytes(p[35]).nil?
       when CMD_SET_RADIO_PARAMS # Ten bytes of radio parameters.

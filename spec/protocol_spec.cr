@@ -192,7 +192,7 @@ describe MeshCoreTCPMux::Protocol do
       # needs at least 136 bytes.
       bytes(9, 135),
       # ADD_UPDATE_CONTACT command (9), 137-byte zero-filled shape fixture. Invalid gap: contact
-      # layouts are 136, 144, or at least 148 bytes.
+      # layouts are 136, 144, 147, or at least 148 bytes.
       bytes(9, 137),
       # SET_RADIO_PARAMS command (11), 10-byte zero-filled shape fixture. Too short; this form
       # needs at least 11 bytes.
@@ -322,6 +322,12 @@ describe MeshCoreTCPMux::Protocol do
     P.validate_command(Bytes[62_u8, 0_u8, 2_u8, 0xaa_u8, 0xbb_u8, 1_u8, 0_u8]).valid?.should be_true
     # ADD_UPDATE_CONTACT command (9), 144-byte zero-filled shape fixture.
     P.validate_command(bytes(9, 144)).valid?.should be_true
+    # ADD_UPDATE_CONTACT command (9), 147-byte MeshCore One shape. Byte 35 is
+    # zero hops (direct), bytes 36..99 hold the empty 64-byte path, bytes
+    # 136..143 hold GPS coordinates, and bytes 144..146 are reserved zeros.
+    # All offsets exclude the three-byte TCP envelope. The companion assigns
+    # its own last-modified timestamp because a full four-byte field is absent.
+    P.validate_command(bytes(9, 147)).valid?.should be_true
     # ADD_UPDATE_CONTACT command (9), 148-byte zero-filled shape fixture.
     P.validate_command(bytes(9, 148)).valid?.should be_true
     # SEND_TELEMETRY_REQ command (39), 4-byte zero-filled shape fixture.
