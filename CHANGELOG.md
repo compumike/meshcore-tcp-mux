@@ -4,8 +4,13 @@
 
 ## Unreleased
 
-- Fix contact updates from MeshCore One, including saving direct routing, by accepting its three reserved padding bytes.
 - (none)
+
+---
+
+## 1.2.0
+
+- Fix contact updates from MeshCore One, including saving direct routing, by accepting its three reserved padding bytes.
 
 ---
 
