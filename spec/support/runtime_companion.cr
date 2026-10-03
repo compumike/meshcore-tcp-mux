@@ -36,7 +36,7 @@ class SpecSupport
     @stopped = false
     @socket : TCPSocket? = nil
 
-    def initialize(@identities : Array(UInt8) = [0xa5_u8]) : Nil
+    def initialize(@identities : Array(UInt8) = [0xa5_u8], @firmware_level : UInt8 = 13_u8, @device_info_tail : Int32 = 0) : Nil
       # Default fake identity marker; later epochs reuse the last supplied value.
       @server = TCPServer.new("127.0.0.1", 0)
       @port = @server.local_address.port
@@ -112,7 +112,10 @@ class SpecSupport
             when 1 # APP_START.
               write(socket, NativeStartupTransport.self_info(identity))
             when 0x16 # DEVICE_QUERY.
-              write(socket, NativeStartupTransport.device_info)
+              payload[1].should eq(MeshCoreTCPMux::Protocol::UPSTREAM_APP_TARGET)
+              info = NativeStartupTransport.device_info + Bytes.new(@device_info_tail, 0x55_u8)
+              info[1] = @firmware_level
+              write(socket, info)
             when 0x36 # SET_FLOOD_SCOPE_KEY.
               # OK (0x00): startup default scope is restored.
               write(socket, Bytes[0_u8])

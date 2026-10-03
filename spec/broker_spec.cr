@@ -109,7 +109,7 @@ describe MeshCoreTCPMux::Broker do
     one(sends(broker.take_actions, 2_i64)).payload.should eq(Bytes[9_u8, 5_u8, 6_u8, 7_u8, 8_u8])
   end
 
-  it "normalizes DEVICE_QUERY upstream but preserves the real reply and requested client version" do
+  it "normalizes DEVICE_QUERY upstream and preserves v13 fields and the requested client dialect" do
     # Synthetic 32-byte companion public key; identifies the epoch, never a real radio key.
     broker = MeshCoreTCPMux::Broker.new(1_i64, Bytes.new(32))
     admit_settled(broker, [1_i64])
@@ -117,15 +117,56 @@ describe MeshCoreTCPMux::Broker do
     # normalization.
     original = Bytes[22_u8, 2_u8, 0xaa_u8]
     broker.client_frame(1_i64, original, Time::Span.zero)
-    # DEVICE_QUERY (22), requested protocol target 13; trailing sentinel must survive
+    # DEVICE_QUERY (22), requested app target 14; trailing sentinel must survive
     # normalization.
-    one(sends(broker.take_actions, 0_i64)).payload.should eq(Bytes[22_u8, 13_u8, 0xaa_u8])
+    one(sends(broker.take_actions, 0_i64)).payload.should eq(Bytes[22_u8, 14_u8, 0xaa_u8])
     broker.upstream_frame(device_info, Time::Span.zero)
     one(sends(broker.take_actions, 1_i64)).payload.should eq(device_info)
     broker.sessions[1_i64].target_version.should eq(2_u8)
     # DEVICE_QUERY (22), requested protocol target 2; trailing sentinel must survive
     # normalization.
     original.should eq(Bytes[22_u8, 2_u8, 0xaa_u8])
+  end
+
+  [13_u8, 14_u8, 15_u8, 99_u8].each do |level|
+    it "caps firmware #{level} DEVICE_INFO while keeping the client's inbox dialect" do
+      broker = MeshCoreTCPMux::Broker.new(1_i64, Bytes.new(32))
+      admit_settled(broker, [1_i64])
+      p = MeshCoreTCPMux::Protocol
+      # DEVICE_QUERY: client requests legacy inbox target 2, mux always requests 14.
+      broker.client_frame(1_i64, Bytes[MeshCoreTCPMux::Protocol::CMD_DEVICE_QUERY, 2], 0.seconds)
+      one(sends(broker.take_actions, 0_i64)).payload.should eq(p.device_query_payload)
+      info = device_info + Bytes.new(8, 0x55_u8) # Future appended fields must stay upstream.
+      info[1] = level
+      broker.upstream_frame(info, 0.seconds)
+      one(sends(broker.take_actions, 1_i64)).payload.should eq(p.downstream_device_info(info))
+      broker.sessions[1_i64].target_version.should eq(2_u8)
+    end
+  end
+
+  [true, false].each do |success|
+    it "serializes CLI ownership and completes on #{success ? "CLI_REPLY" : "ERR"}" do
+      broker = MeshCoreTCPMux::Broker.new(1_i64, Bytes.new(32))
+      admit_settled(broker, [1_i64, 2_i64])
+      p = MeshCoreTCPMux::Protocol
+      # A owns RUN_CLI_COMMAND, including optional NUL; B queues GET_DEVICE_TIME.
+      command = Bytes[MeshCoreTCPMux::Protocol::CMD_RUN_CLI_COMMAND] + "version\0".to_slice
+      broker.client_frame(1_i64, command, 0.seconds)
+      one(sends(broker.take_actions, 0_i64)).payload.should eq(command)
+      broker.client_frame(2_i64, Bytes[MeshCoreTCPMux::Protocol::CMD_GET_DEVICE_TIME], 0.seconds)
+      sends(broker.take_actions, 0_i64).should be_empty
+      # CLI_REPLY text or v13 ERR_UNSUPPORTED_CMD both terminate A's transaction.
+      reply = success ? Bytes[MeshCoreTCPMux::Protocol::RESP_CLI_REPLY] + "synthetic-version".to_slice : Bytes[MeshCoreTCPMux::Protocol::RESP_ERR, MeshCoreTCPMux::Protocol::ERR_UNSUPPORTED_CMD]
+      broker.upstream_frame(reply, 1.millisecond)
+      actions = broker.take_actions
+      one(sends(actions, 1_i64)).payload.should eq(reply)
+      sends(actions, 2_i64).should be_empty
+      one(sends(actions, 0_i64)).payload.should eq(Bytes[MeshCoreTCPMux::Protocol::CMD_GET_DEVICE_TIME])
+      # CURRENT_TIME: opcode plus synthetic four-byte LE timestamp.
+      time = Bytes[MeshCoreTCPMux::Protocol::RESP_CURRENT_TIME, 1, 0, 0, 0]
+      broker.upstream_frame(time, 2.milliseconds)
+      one(sends(broker.take_actions, 2_i64)).payload.should eq(time)
+    end
   end
 
   it "owns a contacts stream through its terminator and drains it after owner disconnect" do

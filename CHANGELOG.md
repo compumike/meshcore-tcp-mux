@@ -4,6 +4,8 @@
 
 ## Unreleased
 
+- Companion protocol version compatibility: handle v14's new RUN_CLI_COMMAND command and response, and advertise v14 support to upstream companion.
+- Companion protocol version compatibility: support newer upstream versions going forward, and support v13 and v14 on a per-client basis.
 - (none)
 
 ---

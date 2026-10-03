@@ -3,13 +3,17 @@ class MeshCoreTCPMux
   class Protocol
     # Describes the supported native companion wire protocol. The broker uses these
     # rules to reject malformed commands and recognize complete, correctly owned replies.
-    # Native v13 caps decoded payloads at 176 bytes and ordinary encoded paths at 64 bytes.
-    MAX_PAYLOAD           =     176
-    NATIVE_PROTOCOL_LEVEL =   13_u8
-    MAX_PATH_SIZE         =      64
-    NO_PATH_ENCODING      = 0xff_u8
-    PATH_COUNT_MASK       = 0x3f_u8
-    PATH_WIDTH_SHIFT_MASK = 0x03_u8
+    # The known v14 dialect caps decoded payloads at 176 bytes and ordinary encoded paths at 64 bytes.
+    MAX_PAYLOAD = 176
+    # App target selects response formats; firmware level independently describes features.
+    UPSTREAM_APP_TARGET                   =   14_u8
+    MAX_EXPOSED_PROTOCOL_LEVEL            =   14_u8
+    MIN_SUPPORTED_UPSTREAM_PROTOCOL_LEVEL =   13_u8
+    DEVICE_INFO_SIZE                      =      82
+    MAX_PATH_SIZE                         =      64
+    NO_PATH_ENCODING                      = 0xff_u8
+    PATH_COUNT_MASK                       = 0x3f_u8
+    PATH_WIDTH_SHIFT_MASK                 = 0x03_u8
 
     ERR_UNSUPPORTED_CMD = 1_u8
     ERR_TABLE_FULL      = 3_u8
@@ -78,6 +82,7 @@ class MeshCoreTCPMux
     CMD_SET_DEFAULT_FLOOD_SCOPE = 63_u8
     CMD_GET_DEFAULT_FLOOD_SCOPE = 64_u8
     CMD_SEND_RAW_PACKET         = 65_u8
+    CMD_RUN_CLI_COMMAND         = 66_u8
 
     RESP_OK                  = 0x00_u8
     RESP_ERR                 = 0x01_u8
@@ -108,6 +113,7 @@ class MeshCoreTCPMux
     RESP_ALLOWED_REPEAT_FREQ = 0x1a_u8
     RESP_CHANNEL_DATA        = 0x1b_u8
     RESP_DEFAULT_FLOOD_SCOPE = 0x1c_u8
+    RESP_CLI_REPLY           = 0x1d_u8
 
     PUSH_ADVERT                  = 0x80_u8
     PUSH_PATH_UPDATED            = 0x81_u8
@@ -142,6 +148,7 @@ class MeshCoreTCPMux
       RESP_TUNING_PARAMS => "tuning_params", RESP_STATS => "stats",
       RESP_AUTOADD_CONFIG => "autoadd_config", RESP_ALLOWED_REPEAT_FREQ => "allowed_repeat_freq",
       RESP_CHANNEL_DATA => "channel_data", RESP_DEFAULT_FLOOD_SCOPE => "default_flood_scope",
+      RESP_CLI_REPLY => "cli_reply",
       PUSH_ADVERT => "advert", PUSH_PATH_UPDATED => "path_updated",
       PUSH_SEND_CONFIRMED => "send_confirmed", PUSH_MSG_WAITING => "msg_waiting",
       PUSH_RAW_DATA => "raw_data", PUSH_LOGIN_SUCCESS => "login_success",
@@ -160,7 +167,7 @@ class MeshCoreTCPMux
     end
 
     def self.known_response?(code : UInt8) : Bool
-      # Ordinary response codes are a closed native-v13 range. Pushes occupy a
+      # Ordinary response codes are a closed known companion range. Pushes occupy a
       # sparse named range; other high codes remain forward-compatible opaque
       # broadcasts whose diagnostics must take the rate-limited path.
       RESPONSE_NAMES.has_key?(code)
@@ -168,7 +175,7 @@ class MeshCoreTCPMux
 
     def self.describe_command(payload : Bytes, include_payload = false) : String
       # Include stable semantic fields in the summary and, when requested, the
-      # complete decoded payload as hexadecimal for wire-level diagnostics.
+      # decoded payload as hexadecimal for wire-level diagnostics, except sensitive CLI bodies.
       descriptor = descriptor(payload)
       name = descriptor.try(&.name) || :unknown
       summary = "command=#{name} opcode=#{hex_byte(payload[0]?)} command_bytes=#{payload.size}"
@@ -176,7 +183,8 @@ class MeshCoreTCPMux
         summary += " peer=#{hex(peer)}"
       end
       summary += command_details(payload)
-      summary += " payload=#{hex(payload)}" if include_payload
+      # Local CLI bodies may contain credentials; retain routing metadata only.
+      summary += (!payload.empty? && payload[0] == CMD_RUN_CLI_COMMAND ? " payload=[redacted]" : " payload=#{hex(payload)}") if include_payload
       summary
     end
 
@@ -196,7 +204,7 @@ class MeshCoreTCPMux
         summary += " token=#{read_u32(payload, 1)} round_trip_ms=#{read_u32(payload, 5)}"
       end
       summary += response_details(payload)
-      summary += " payload=#{hex(payload)}" if include_payload
+      summary += (payload[0] == RESP_CLI_REPLY ? " payload=[redacted]" : " payload=#{hex(payload)}") if include_payload
       summary
     end
 
@@ -581,6 +589,7 @@ class MeshCoreTCPMux
       CMD_SET_DEFAULT_FLOOD_SCOPE => d(CMD_SET_DEFAULT_FLOOD_SCOPE, :set_default_flood_scope, Grammar::Single, [RESP_OK]),
       CMD_GET_DEFAULT_FLOOD_SCOPE => d(CMD_GET_DEFAULT_FLOOD_SCOPE, :get_default_flood_scope, Grammar::Single, [RESP_DEFAULT_FLOOD_SCOPE]),
       CMD_SEND_RAW_PACKET         => d(CMD_SEND_RAW_PACKET, :send_raw_packet, Grammar::Single, [RESP_OK]),
+      CMD_RUN_CLI_COMMAND         => d(CMD_RUN_CLI_COMMAND, :run_cli_command, Grammar::Single, [RESP_CLI_REPLY]),
     }
 
     def self.descriptor(payload : Bytes) : CommandDescriptor?
@@ -629,6 +638,8 @@ class MeshCoreTCPMux
         n >= 5
       when CMD_SEND_SELF_ADVERT # Advert parameters are optional.
         n >= 1
+      when CMD_RUN_CLI_COMMAND # Opcode plus nonempty opaque command; no mandatory NUL terminator.
+        n >= 2
       when CMD_SET_ADVERT_NAME # At least one name byte.
         n >= 2
       when CMD_ADD_UPDATE_CONTACT # Byte 35 encodes the contact's outbound path.
@@ -802,8 +813,11 @@ class MeshCoreTCPMux
              n >= 2
            when RESP_BATTERY_AND_STORAGE # Battery/storage fields total ten bytes after opcode.
              n == 11
-           when RESP_DEVICE_INFO # Fixed native device-information record.
-             n == 82
+           when RESP_DEVICE_INFO
+             # Known prefix excludes the TCP envelope; future firmware may append fields.
+             n >= DEVICE_INFO_SIZE && p[1] >= MIN_SUPPORTED_UPSTREAM_PROTOCOL_LEVEL
+           when RESP_CLI_REPLY # Opcode plus optional opaque text, including an empty reply.
+             n >= 1
            when RESP_PRIVATE_KEY, RESP_SIGNATURE # 64-byte key/signature after opcode.
              n == 65
            when RESP_CONTACT_MESSAGE_V3 # V3 DM adds SNR and two reserved bytes; type at byte 11.
@@ -965,13 +979,13 @@ class MeshCoreTCPMux
       end
     end
 
-    def self.device_query_payload(target : UInt8 = NATIVE_PROTOCOL_LEVEL) : Bytes
+    def self.device_query_payload(target : UInt8 = UPSTREAM_APP_TARGET) : Bytes
       # Build DEVICE_QUERY (22) with the requested companion protocol target.
       Bytes[CMD_DEVICE_QUERY, target]
     end
 
-    def self.normalize_device_query(payload : Bytes, target : UInt8 = NATIVE_PROTOCOL_LEVEL) : Bytes
-      # Keep the upstream on our native protocol target, regardless of the downstream client's version.
+    def self.normalize_device_query(payload : Bytes, target : UInt8 = UPSTREAM_APP_TARGET) : Bytes
+      # Keep the upstream on our mux-owned app target, regardless of the downstream client's version.
       # Broker remembers the original target and downgrades that client's inbox separately.
       result = validate_command(payload)
       raise ArgumentError.new("malformed DEVICE_QUERY") unless result.valid? && payload[0] == CMD_DEVICE_QUERY
@@ -987,13 +1001,25 @@ class MeshCoreTCPMux
       payload[4, 32].dup
     end
 
-    def self.validate_device_info!(payload : Bytes, expected_protocol : UInt8 = NATIVE_PROTOCOL_LEVEL) : UInt8
-      # DEVICE_INFO (0x0d) is 82 bytes; byte 1 is the firmware protocol level.
-      # Reject incompatible firmware before admitting clients.
-      raise ProtocolError.new("malformed DEVICE_INFO") unless payload.size == 82 && payload[0] == RESP_DEVICE_INFO
+    def self.validate_device_info!(payload : Bytes) : UInt8
+      # DEVICE_INFO's known 82-byte prefix includes the opcode, firmware byte,
+      # capacities, LE PIN, fixed identification strings, repeat and path-hash mode.
+      # Newer firmware may append fields but must preserve this negotiated prefix.
+      raise ProtocolError.new("malformed DEVICE_INFO") unless payload.size >= DEVICE_INFO_SIZE && payload.size <= MAX_PAYLOAD && payload[0] == RESP_DEVICE_INFO
       actual = payload[1]
-      raise ProtocolError.new("unsupported firmware protocol level #{actual}; expected #{expected_protocol}") unless actual == expected_protocol
+      if actual < MIN_SUPPORTED_UPSTREAM_PROTOCOL_LEVEL
+        raise ProtocolError.new("unsupported firmware protocol level #{actual}; minimum #{MIN_SUPPORTED_UPSTREAM_PROTOCOL_LEVEL}")
+      end
       actual
+    end
+
+    def self.downstream_device_info(payload : Bytes) : Bytes
+      # Advertise only implemented capabilities and their known record shape.
+      # Own the copy so rewriting the firmware byte never mutates upstream evidence.
+      actual = validate_device_info!(payload)
+      copy = payload[0, DEVICE_INFO_SIZE].dup
+      copy[1] = Math.min(actual, MAX_EXPOSED_PROTOCOL_LEVEL)
+      copy
     end
   end
 end

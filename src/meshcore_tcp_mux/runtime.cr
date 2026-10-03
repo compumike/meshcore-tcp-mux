@@ -110,6 +110,9 @@ class MeshCoreTCPMux
             broker = Broker.new(@next_epoch, self_key, @config, Clock.now, orphan, @dedicated_slots, radio_state)
             ready_at = Clock.now
             @upstream_connection_usable = true
+            if (actual = startup.upstream_protocol_level) && actual > Protocol::MAX_EXPOSED_PROTOCOL_LEVEL
+              LOGGER.warn { "upstream firmware protocol #{actual} is newer than mux-supported protocol #{Protocol::MAX_EXPOSED_PROTOCOL_LEVEL}; using compatibility mode and exposing protocol #{startup.exposed_protocol_level} downstream" }
+            end
             LOGGER.info { "event=upstream.ready epoch=#{@next_epoch} remote=#{socket_address(socket.remote_address)} #{startup.identification}" }
             run_epoch(broker, endpoint, upstream_events)
             drain_response_debt(broker, endpoint, upstream_events) if broker.response_debt && !@stop_requested

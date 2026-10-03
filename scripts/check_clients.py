@@ -49,9 +49,9 @@ async def query_read_only(client: MeshCore, label: str, iteration: int) -> dict[
         EventType.DEVICE_INFO,
         f"{label} device query {iteration}",
     )
-    if device.payload.get("fw ver") != 13:
+    if device.payload.get("fw ver") not in (13, 14):
         raise AssertionError(
-            f"{label}: expected native protocol 13, got {device.payload.get('fw ver')!r}"
+            f"{label}: expected exposed protocol 13 or 14, got {device.payload.get('fw ver')!r}"
         )
 
     current_time = require_event(

@@ -23,14 +23,14 @@ describe MeshCoreTCPMux::Startup do
   # DEVICE_INFO and acknowledged default-scope reset are then required for ready.
   # These fixtures are decoded payloads, sometimes opcode-only stale markers.
 
-  it "constructs five correctly reserved app starts and the target-13 query" do
+  it "constructs five correctly reserved app starts and the target-14 query" do
     probes = MeshCoreTCPMux::Startup.probes
     probes.size.should eq(6)
     # APP_START (1) followed by its seven required reserved zero bytes.
     probes.first[0, 8].should eq(Bytes[1, 0, 0, 0, 0, 0, 0, 0])
     String.new(probes.first[8..]).should eq("meshcore-tcp-mux")
-    # DEVICE_QUERY (22), requested protocol target 13.
-    probes.last.should eq(Bytes[0x16, 13])
+    # DEVICE_QUERY (22), requested app target 14.
+    probes.last.should eq(Bytes[0x16, 14])
   end
 
   it "cannot accept any stale prefix of up to four ordinary marker classes" do

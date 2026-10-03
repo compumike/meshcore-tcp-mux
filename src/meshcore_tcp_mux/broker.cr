@@ -552,7 +552,7 @@ class MeshCoreTCPMux
     end
 
     private def send_command(transaction : Transaction, now : Time::Span) : Nil
-      # DEVICE_QUERY (22) is forwarded at our native target; the original client target stays in the transaction.
+      # DEVICE_QUERY (22) is forwarded at our mux-owned app target; the original client target stays in the transaction.
       transaction.step = Transaction::Step::Command
       command = transaction.command
       forwarded = command[0] == Protocol::CMD_DEVICE_QUERY ? Protocol.normalize_device_query(command) : command # 22 = DEVICE_QUERY.
@@ -707,7 +707,10 @@ class MeshCoreTCPMux
         if transaction.command[0] == Protocol::CMD_DEVICE_QUERY && payload[0] == Protocol::RESP_DEVICE_INFO # 22 = DEVICE_QUERY; 0x0d = DEVICE_INFO.
           session.target_version = transaction.command[1]
         end
-        response_write_id = emit(session.id, payload)
+        # DEVICE_INFO is a capability view of the mux; future firmware tails
+        # and unsupported feature levels must not escape to downstream clients.
+        visible = payload[0] == Protocol::RESP_DEVICE_INFO ? Protocol.downstream_device_info(payload) : payload
+        response_write_id = emit(session.id, visible)
       end
       transaction.progress = now
       if disposition.complete?

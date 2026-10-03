@@ -27,4 +27,23 @@ describe MeshCoreTCPMux::WireLog do
       "DEDICATED_CLIENT(5047): tx END_OF_CONTACTS payload=0400000000"
     )
   end
+  it "redacts CLI bodies across all transport directions" do
+    # RUN_CLI_COMMAND and CLI_REPLY can contain secrets; neither wire nor semantic
+    # logs may retain their bodies, but opcode, length and endpoint remain visible.
+    command = Bytes[MeshCoreTCPMux::Protocol::CMD_RUN_CLI_COMMAND] + "secret".to_slice
+    reply = Bytes[MeshCoreTCPMux::Protocol::RESP_CLI_REPLY] + "secret".to_slice
+    logs = [
+      MeshCoreTCPMux::WireLog.upstream(1_i64, :tx, command),
+      MeshCoreTCPMux::WireLog.upstream(1_i64, :rx, reply),
+      MeshCoreTCPMux::WireLog.multi_client(1_i64, :rx, command),
+      MeshCoreTCPMux::WireLog.multi_client(1_i64, :tx, reply),
+      MeshCoreTCPMux::WireLog.dedicated_client(5002, :rx, command),
+      MeshCoreTCPMux::WireLog.dedicated_client(5002, :tx, reply),
+    ]
+    logs.each do |log|
+      log.should contain("payload=[redacted]")
+      log.should_not contain("secret")
+      log.should_not contain(MeshCoreTCPMux::Protocol.hex("secret".to_slice))
+    end
+  end
 end

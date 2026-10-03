@@ -14,6 +14,9 @@ class MeshCoreTCPMux
 
     getter self_key : Bytes?
     getter device_info : Bytes?
+    getter upstream_protocol_level : UInt8?
+    getter exposed_protocol_level : UInt8?
+    getter downstream_device_info : Bytes?
     getter deadline : Time::Span
     @self_run = 0
     @awaiting_scope = false
@@ -30,7 +33,7 @@ class MeshCoreTCPMux
     end
 
     def self.probes : Array(Bytes)
-      # Five APP_START commands fence the four-frame stale queue; DEVICE_QUERY (0x16) requests native v13.
+      # Five APP_START commands fence the four-frame stale queue; DEVICE_QUERY (0x16) requests the mux-owned response dialect.
       Array.new(5) { app_start } << Protocol.device_query_payload
     end
 
@@ -55,7 +58,9 @@ class MeshCoreTCPMux
         @self_key = Protocol.validate_self_info!(payload)
         @self_run += 1
       elsif payload[0] == Protocol::RESP_DEVICE_INFO && @self_run >= 5
-        Protocol.validate_device_info!(payload)
+        @upstream_protocol_level = Protocol.validate_device_info!(payload)
+        @downstream_device_info = Protocol.downstream_device_info(payload)
+        @exposed_protocol_level = @downstream_device_info.not_nil![1]
         @device_info = payload.dup
         @awaiting_scope = true
         # SET_FLOOD_SCOPE_KEY mode zero selects the companion's configured default.
@@ -72,7 +77,7 @@ class MeshCoreTCPMux
 
     def identification : String
       info = @device_info || raise Error.new("device has not been identified")
-      "profile=native_v13 protocol=#{info[1]} model=#{field(info, 20, 40)} firmware=#{field(info, 60, 20)} build=#{field(info, 8, 12)}"
+      "profile=companion_v14 upstream_protocol=#{@upstream_protocol_level} exposed_protocol=#{@exposed_protocol_level} app_target=#{Protocol::UPSTREAM_APP_TARGET} compatibility_mode=#{info[1] > Protocol::MAX_EXPOSED_PROTOCOL_LEVEL} model=#{field(info, 20, 40)} firmware=#{field(info, 60, 20)} build=#{field(info, 8, 12)}"
     end
 
     private def field(info : Bytes, offset : Int32, length : Int32) : String

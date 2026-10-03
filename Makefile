@@ -30,6 +30,9 @@ format-check:
 smoke: $(BINARY)
 	$(PYTHON) -m unittest discover -s scripts -p 'test_*.py'
 	$(PYTHON) scripts/check_fake_clients.py --mux-binary $(BINARY)
+	$(PYTHON) scripts/check_fake_clients.py --mux-binary $(BINARY) --firmware-level 14
+	$(PYTHON) scripts/check_fake_clients.py --mux-binary $(BINARY) --firmware-level 15 --device-info-tail 8
+	$(PYTHON) scripts/check_fake_clients.py --mux-binary $(BINARY) --firmware-level 99
 
 ci: format-check all spec smoke
 

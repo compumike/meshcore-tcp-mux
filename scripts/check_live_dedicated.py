@@ -120,9 +120,22 @@ class AckCollector:
                 if payload.get("code") == token:
                     return payload
 
-        receipts = await asyncio.wait_for(
-            asyncio.gather(*(matching(label) for label in labels)), timeout
-        )
+        matched: set[str] = set()
+
+        async def recorded_match(label: str) -> dict[str, Any]:
+            receipt = await matching(label)
+            matched.add(label)
+            return receipt
+
+        try:
+            receipts = await asyncio.wait_for(
+                asyncio.gather(*(recorded_match(label) for label in labels)), timeout
+            )
+        except asyncio.TimeoutError as exc:
+            missing = sorted(set(labels) - matched)
+            raise AssertionError(
+                f"matching ACK missing on {', '.join(missing)} after {timeout:.3f}s"
+            ) from exc
         if any(receipt != receipts[0] for receipt in receipts[1:]):
             raise AssertionError("mux sessions observed different ACK payloads")
 

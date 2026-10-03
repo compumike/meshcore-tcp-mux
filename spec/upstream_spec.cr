@@ -103,7 +103,7 @@ describe MeshCoreTCPMux::Upstream do
   it "uses the shared endpoint for the complete startup fence and shuts it down cleanly" do
     fake = IsolatedProbeCompanion.new
     result = MeshCoreTCPMux::Upstream.probe("127.0.0.1", fake.port, probe_config)
-    result.should contain("profile=native_v13 protocol=13")
+    result.should contain("profile=companion_v14 upstream_protocol=13 exposed_protocol=13")
     # SET_FLOOD_SCOPE_KEY (54/0x36), mode 0 with no key: restore the configured default scope.
     fake.commands.should eq(MeshCoreTCPMux::Startup.probes + [Bytes[0x36_u8, 0_u8]])
     select

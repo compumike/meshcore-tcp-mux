@@ -34,6 +34,16 @@ The implemented compatibility profile is `native_v13`: protocol level 13 with pa
 - [`Startup`](src/meshcore_tcp_mux/startup.cr) establishes a synchronization fence, validates `native_v13`, captures the node identity, and restores the default flood scope before `Runtime` admits clients.
 - [`Config`](src/meshcore_tcp_mux/config.cr) gathers queue bounds, deadlines, polling intervals, and permissions. [`Clock`](src/meshcore_tcp_mux/config.cr) supplies monotonic time so wall-clock changes cannot alter protocol deadlines.
 
+## Companion protocol version compatibility
+
+meshcore-tcp-mux requests upstream app target version 14 of the companion protocol, and accepts firmware protocol levels 13 and newer.
+
+Downstream `DEVICE_INFO` advertises at most protocol 14 and includes only the known 82-byte record.
+
+Newer firmware (> 14) is accepted in compatibility mode while unknown ordinary replies and malformed frames still fail the connection.
+
+Each client's requested inbox dialect is retained independently. Protocol 14 local CLI commands are serialized like other requests, and their replies go only to the requesting client. CLI command and reply bodies are redacted from mux logs. A CLI reboot or missing reply uses bounded epoch recovery without replaying the command.
+
 ## Command and response flow
 
 - A client endpoint decodes a complete command and sends it to `Runtime`.

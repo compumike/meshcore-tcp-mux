@@ -16,8 +16,8 @@ describe MeshCoreTCPMux::Protocol do
   # Commands and responses reuse numeric codes, so direction matters. Multi-byte
   # fields are little-endian; identities and bodies are synthetic test data.
 
-  it "describes every native_v13 command and rejects reserved/unknown opcodes" do
-    expected = ((1_u8..43_u8).to_a + (50_u8..52_u8).to_a + (54_u8..65_u8).to_a)
+  it "describes every known companion command and rejects reserved/unknown opcodes" do
+    expected = ((1_u8..43_u8).to_a + (50_u8..52_u8).to_a + (54_u8..66_u8).to_a)
     P::DESCRIPTORS.keys.sort.should eq(expected)
     # Reserved opcode from the tested range; no command is defined for it.
     (44_u8..49_u8).each { |code| P.validate_command(Bytes[code]).reason.should eq(P::ERR_UNSUPPORTED_CMD) }
@@ -423,8 +423,8 @@ describe MeshCoreTCPMux::Protocol do
       0x0b_u8 => bytes(0x0b, 2),
       # BATTERY_AND_STORAGE response (0x0c), 11-byte zero-filled shape fixture.
       0x0c_u8 => bytes(0x0c, 11),
-      # DEVICE_INFO response (0x0d), 82-byte zero-filled shape fixture.
-      0x0d_u8 => bytes(0x0d, 82),
+      # DEVICE_INFO response (0x0d), 82-byte prefix; firmware 13 at offset 1.
+      0x0d_u8 => bytes(0x0d, 82).tap { |p| p[1] = 13_u8 },
       # PRIVATE_KEY response (0x0e), 65-byte zero-filled shape fixture.
       0x0e_u8 => bytes(0x0e, 65),
       # DISABLED response (0x0f), 1-byte zero-filled shape fixture.
@@ -453,6 +453,8 @@ describe MeshCoreTCPMux::Protocol do
       0x1a_u8 => bytes(0x1a, 1),
       # CHANNEL_DATA response (0x1b), 9-byte zero-filled shape fixture.
       0x1b_u8 => bytes(0x1b, 9),
+      # CLI_REPLY (0x1d): opcode-only empty reply is valid.
+      0x1d_u8 => bytes(0x1d, 1),
       # DEFAULT_FLOOD_SCOPE response (0x1c), 1-byte zero-filled shape fixture.
       0x1c_u8 => bytes(0x1c, 1),
       # TELEMETRY_RESPONSE response (0x8b), 8-byte zero-filled shape fixture.
@@ -508,13 +510,13 @@ describe MeshCoreTCPMux::Protocol do
     # Deliberately short APP_START reserved field: six bytes rather than the required seven.
     expect_raises(ArgumentError) { P.app_start_payload("x", Bytes.new(6)) }
 
-    # DEVICE_QUERY (22), requested protocol target 13.
-    P.device_query_payload.should eq(Bytes[22_u8, 13_u8])
+    # DEVICE_QUERY (22), requested app target 14.
+    P.device_query_payload.should eq(Bytes[22_u8, 14_u8])
     # DEVICE_QUERY (22), requested protocol target 2; trailing sentinel must survive
     # normalization.
-    # DEVICE_QUERY (22), requested protocol target 13; trailing sentinel must survive
+    # DEVICE_QUERY (22), requested app target 14; trailing sentinel must survive
     # normalization.
-    P.normalize_device_query(Bytes[22_u8, 2_u8, 99_u8]).should eq(Bytes[22_u8, 13_u8, 99_u8])
+    P.normalize_device_query(Bytes[22_u8, 2_u8, 99_u8]).should eq(Bytes[22_u8, 14_u8, 99_u8])
 
     # SELF_INFO response (5), 58-byte zero-filled shape fixture.
     self_info = bytes(5, 58)

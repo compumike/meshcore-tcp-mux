@@ -304,6 +304,58 @@ describe MeshCoreTCPMux::Runtime, "fault and epoch boundaries" do
     companion.try &.stop
   end
 
+  [14_u8, 15_u8].each do |level|
+    [:disconnect, :timeout].each do |fault|
+      it "recovers firmware #{level} CLI reboot after #{fault} without replay" do
+        companion = SpecSupport::RuntimeCompanion.new(firmware_level: level, device_info_tail: 8)
+        runtime, config, runtime_done = start_fault_runtime(companion)
+        await_epoch_ready(companion, 1)
+        client = admit_client(companion, config, 1)
+        # RUN_CLI_COMMAND reboot deliberately gives no reply. It remains an ordinary
+        # transaction; EOF or timeout must close its owner and bound response debt.
+        command = Bytes[MeshCoreTCPMux::Protocol::CMD_RUN_CLI_COMMAND] + "reboot".to_slice
+        send_command(client, command)
+        next_command(companion, MeshCoreTCPMux::Protocol::CMD_RUN_CLI_COMMAND, 1).payload.should eq(command)
+        fault == :disconnect ? companion.disconnect : companion.drop
+        expect_closed(client)
+        await_epoch_ready(companion, 2)
+        replacement = admit_client(companion, config, 2)
+        # A clean clock request after reconnect proves no reboot replay or reply debt.
+        send_command(replacement, Bytes[MeshCoreTCPMux::Protocol::CMD_GET_DEVICE_TIME])
+        next_command(companion, MeshCoreTCPMux::Protocol::CMD_GET_DEVICE_TIME, 2)
+        companion.reply(Bytes[MeshCoreTCPMux::Protocol::RESP_CURRENT_TIME, 1, 0, 0, 0])
+        read_payload(replacement, MeshCoreTCPMux::Protocol::RESP_CURRENT_TIME).size.should eq(5)
+      ensure
+        client.try &.close
+        replacement.try &.close
+        runtime.try &.stop
+        runtime_done.try &.receive
+        companion.try &.stop
+      end
+    end
+  end
+
+  it "accepts future firmware pushes but fails unknown ordinary response semantics" do
+    companion = SpecSupport::RuntimeCompanion.new(firmware_level: 15_u8, device_info_tail: 8)
+    runtime, config, runtime_done = start_fault_runtime(companion)
+    await_epoch_ready(companion, 1)
+    client = admit_client(companion, config, 1)
+    # 0xfe is an unknown high push: opaque bytes are still broadcast safely.
+    companion.push(Bytes[0xfe_u8, 0x55_u8])
+    read_payload(client, 0xfe_u8).should eq(Bytes[0xfe_u8, 0x55_u8])
+    send_command(client, Bytes[MeshCoreTCPMux::Protocol::CMD_GET_DEVICE_TIME])
+    next_command(companion, MeshCoreTCPMux::Protocol::CMD_GET_DEVICE_TIME, 1)
+    # 0x1e is an unknown low ordinary reply; ownership cannot safely be guessed.
+    companion.reply(Bytes[0x1e_u8])
+    expect_closed(client)
+    await_epoch_ready(companion, 2)
+  ensure
+    client.try &.close
+    runtime.try &.stop
+    runtime_done.try &.receive
+    companion.try &.stop
+  end
+
   it "bounds quarantine when response debt receives a mismatched late frame" do
     companion = SpecSupport::RuntimeCompanion.new
     runtime, config, runtime_done = start_fault_runtime(companion)

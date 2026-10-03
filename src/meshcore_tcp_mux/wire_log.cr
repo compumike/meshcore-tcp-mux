@@ -4,26 +4,33 @@ class MeshCoreTCPMux
   # Namespace for the TCP multiplexer: transport, protocol validation, and per-client state.
   class WireLog
     # Formats one decoded wire frame with its physical direction and complete
-    # payload. Runtime supplies the endpoint identity; Protocol supplies names
+    # payload, redacting local CLI bodies. Runtime supplies the endpoint identity; Protocol supplies names
     # and fields that can be decoded without decrypting application data.
     def self.upstream(epoch : Int64, direction : Symbol, payload : Bytes) : String
       # Identify the shared physical companion by its reconnect epoch.
       description = direction == :tx ? Protocol.describe_command(payload) : Protocol.describe_response(payload)
-      "UPSTREAM(#{epoch}): #{direction} #{wire_name(direction == :tx, payload)} payload=#{Protocol.hex(payload)} #{description}"
+      "UPSTREAM(#{epoch}): #{direction} #{wire_name(direction == :tx, payload)} payload=#{wire_payload(direction == :tx, payload)} #{description}"
     end
 
     def self.multi_client(session : Int64, direction : Symbol, payload : Bytes) : String
       # Multi-client identity lasts only for this downstream socket session.
       description = direction == :rx ? Protocol.describe_command(payload) : Protocol.describe_response(payload)
       "MULTI_CLIENT(#{session}): #{direction} #{wire_name(direction == :rx, payload)} " \
-      "payload=#{Protocol.hex(payload)} #{description}"
+      "payload=#{wire_payload(direction == :rx, payload)} #{description}"
     end
 
     def self.dedicated_client(port : Int32, direction : Symbol, payload : Bytes) : String
       # Dedicated identity is the stable configured port across replacements.
       description = direction == :rx ? Protocol.describe_command(payload) : Protocol.describe_response(payload)
       "DEDICATED_CLIENT(#{port}): #{direction} #{wire_name(direction == :rx, payload)} " \
-      "payload=#{Protocol.hex(payload)} #{description}"
+      "payload=#{wire_payload(direction == :rx, payload)} #{description}"
+    end
+
+    private def self.wire_payload(command : Bool, payload : Bytes) : String
+      # CLI text can contain credentials on either side of the mux. Direction
+      # selects the opcode namespace; metadata still identifies length and owner.
+      sensitive = command ? Protocol::CMD_RUN_CLI_COMMAND : Protocol::RESP_CLI_REPLY
+      !payload.empty? && payload[0] == sensitive ? "[redacted]" : Protocol.hex(payload)
     end
 
     private def self.wire_name(command : Bool, payload : Bytes) : String

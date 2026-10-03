@@ -40,15 +40,15 @@ def self_info() -> bytes:
     return fixed + b"fake-companion"
 
 
-def device_info() -> bytes:
-    # DEVICE_INFO (13): protocol 13, contact/channel capacities, synthetic PIN
+def device_info(firmware_level: int = 13, future_tail: bytes = b"") -> bytes:
+    # DEVICE_INFO (13): configurable firmware level, contact/channel capacities, synthetic PIN
     # (u32 LE) at 4..7, then NUL-padded build/model/version fields at 8/20/60.
     # Two final capability bytes make 82 payload bytes, excluding the envelope.
     def field(value: bytes, size: int) -> bytes:
         return value[: size - 1].ljust(size, b"\0")
 
     payload = (
-        bytes([13, 13, 16, 8])
+        bytes([13, firmware_level, 16, 8])
         + (123456).to_bytes(4, "little")
         + field(b"2026-09-13", 12)
         + field(b"stdlib-fake", 40)
@@ -56,7 +56,7 @@ def device_info() -> bytes:
         + bytes([0, 0])
     )
     assert len(payload) == 82
-    return payload
+    return payload + future_tail
 
 
 def contact_record(seed: int) -> bytes:
@@ -113,7 +113,9 @@ def channel_message(text: str, timestamp: int = 2345) -> bytes:
 
 class FakeCompanion:
     # Loopback companion implementing startup, contacts, time, and inbox operations for real Python clients.
-    def __init__(self) -> None:
+    def __init__(self, firmware_level: int = 13, future_tail: bytes = b"") -> None:
+        self.firmware_level = firmware_level
+        self.future_tail = future_tail
         self.server: asyncio.Server | None = None
         self.writer: asyncio.StreamWriter | None = None
         self.write_lock = asyncio.Lock()
@@ -191,7 +193,12 @@ class FakeCompanion:
             if len(payload) < 2:
                 raise AssertionError("truncated DEVICE_QUERY")
             self.query_targets.append(payload[1])
-            await self.send(device_info())
+            await self.send(device_info(self.firmware_level, self.future_tail))
+        elif opcode == 66:  # RUN_CLI_COMMAND: opaque command bytes without mandatory NUL.
+            if self.firmware_level < 14:
+                await self.send(bytes([1, 1]))  # ERR, UNSUPPORTED_CMD on v13.
+            else:
+                await self.send(bytes([29]) + b"synthetic-version")  # CLI_REPLY text.
         elif opcode == 54:  # SET_FLOOD_SCOPE_KEY.
             await self.send(bytes([0]))  # OK: scope accepted.
         elif opcode == 10:  # SYNC_NEXT_MESSAGE.
@@ -285,8 +292,8 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
     if not binary.is_file() or not os.access(binary, os.X_OK):
         raise AssertionError(f"mux binary is not executable: {binary} (run make first)")
 
-    fake = FakeCompanion()
-    # This entry predates startup and the node-global target-13 normalization.
+    fake = FakeCompanion(args.firmware_level, bytes(args.device_info_tail))
+    # This entry predates startup and the node-global target-14 normalization.
     # With no downstream session, the mux must leave it in physical backlog.
     fake.offline.append(legacy_contact_message("native-legacy-backlog"))
     await fake.start()
@@ -350,8 +357,9 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
             EventType.DEVICE_INFO,
             "modern DEVICE_QUERY",
         )
-        if legacy_query.payload["fw ver"] != 13 or modern_query.payload["fw ver"] != 13:
-            raise AssertionError("clients did not receive real protocol level 13")
+        exposed_level = min(args.firmware_level, 14)
+        if any(query.payload["fw ver"] != exposed_level for query in (legacy_query, modern_query)):
+            raise AssertionError("clients did not receive the capped protocol capability")
 
         contacts = await asyncio.gather(
             legacy.commands.get_contacts(timeout=4),
@@ -433,12 +441,33 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
             if event.payload["text"] != "after-reconnect":
                 raise AssertionError("post-reconnect channel body mismatch")
 
-        if not fake.query_targets or set(fake.query_targets) != {13}:
+        # The firmware byte is the mux's capped capability, independent of client target.
+        for client in (modern, replacement):
+            info = require_event(
+                await client.commands.send_device_query(),
+                EventType.DEVICE_INFO,
+                "capped DEVICE_INFO",
+            )
+            if info.payload["fw ver"] != min(args.firmware_level, 14):
+                raise AssertionError("uncapped downstream protocol")
+        replies = await asyncio.gather(
+            *(client.commands.run_cli_command("version") for client in (modern, replacement))
+        )
+        expected_cli = EventType.CLI_REPLY if args.firmware_level >= 14 else EventType.ERROR
+        for reply in replies:
+            if reply.type != expected_cli:
+                raise AssertionError(f"unexpected CLI reply: {reply!r}")
+            if args.firmware_level >= 14 and reply.payload.get("text") != "synthetic-version":
+                raise AssertionError("CLI reply body changed")
+
+        if not fake.query_targets or set(fake.query_targets) != {14}:
             raise AssertionError(
                 f"mux did not normalize every upstream DEVICE_QUERY: {fake.query_targets!r}"
             )
         return {
             "status": "ok",
+            "upstream_protocol": args.firmware_level,
+            "exposed_protocol": min(args.firmware_level, 14),
             "clients": 4,
             "contacts_per_client": 2,
             "unique_time_responses": len(times),
@@ -472,6 +501,8 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--mux-binary", default="out/meshcore-tcp-mux")
+    parser.add_argument("--firmware-level", type=int, choices=range(13, 256), default=13)
+    parser.add_argument("--device-info-tail", type=int, choices=range(95), default=0)
     return parser.parse_args()
 
 

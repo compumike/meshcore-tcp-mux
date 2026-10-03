@@ -52,6 +52,7 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
             "firmware": device.payload.get("ver", ""),
             "build": device.payload.get("fw_build", ""),
             "protocol": device.payload.get("fw ver"),
+            **{key: value for key, value in client.self_info.items() if key.startswith("radio_")},
             "clock_is_positive": current_time.payload.get("time", 0) > 0,
             "battery_fields": sorted(battery.payload.keys()),
             "self_telemetry_fields": sorted(telemetry.payload.keys()),
