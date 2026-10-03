@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1
 
 # Pin multi-platform index digests, not a single architecture's manifest.
-FROM crystallang/crystal:1.21.0-alpine@sha256:82ed00e2f1d0d45267c76e45def3c97e4c2ef20bf8005067ab0124a393f610fc AS build_and_test
+FROM crystallang/crystal:1.21.1-alpine@sha256:82ed00e2f1d0d45267c76e45def3c97e4c2ef20bf8005067ab0124a393f610fc AS build_and_test
 # Test dependencies never enter the runtime image. No hardware is contacted:
 # both the Crystal specs and Python smoke check use isolated fake companions.
 RUN apk add --no-cache \
