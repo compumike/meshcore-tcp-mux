@@ -8,6 +8,12 @@
 
 ---
 
+## 1.3.1
+
+- Upgrade to Crystal 1.21.1
+
+---
+
 ## 1.3.0
 
 - Companion protocol version compatibility: handle v14's new `RUN_CLI_COMMAND` command and response, and advertise v14 support to upstream companion.
